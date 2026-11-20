@@ -22,11 +22,16 @@ import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlin.math.roundToInt
 
-data class TItem(val id: Long, val kind: Kind, val startMs: Long, val durMs: Long, val label: String)
+data class TItem(
+    val id: Long, val kind: Kind, val startMs: Long, val durMs: Long, val label: String,
+    val uri: String? = null, val inMs: Long = 0
+)
 
 private val rowH = 36.dp
 
@@ -43,7 +48,7 @@ fun Timeline(vm: EditorViewModel, modifier: Modifier = Modifier) {
 
     val clipItems = remember(p.clips) {
         var acc = 0L
-        p.clips.mapIndexed { i, c -> TItem(c.id, Kind.CLIP, acc, c.durMs, "Clip ${i + 1}").also { acc += c.durMs } }
+        p.clips.mapIndexed { i, c -> TItem(c.id, Kind.CLIP, acc, c.durMs, "Clip ${i + 1}", c.uri, c.inMs).also { acc += c.durMs } }
     }
     val subItems = remember(p.subs) { p.subs.map { TItem(it.id, Kind.SUB, it.startMs, it.endMs - it.startMs, it.text) } }
     val textItems = remember(p.texts) { p.texts.map { TItem(it.id, Kind.TEXT, it.startMs, it.durMs, it.text) } }
@@ -53,16 +58,17 @@ fun Timeline(vm: EditorViewModel, modifier: Modifier = Modifier) {
     BoxWithConstraints(modifier.background(Color(0xFF181820))) {
         val half = maxWidth / 2
         val contentW = half * 2 + (p.totalMs * dpPerMs).dp
+        val viewPx = with(density) { (half * 2).toPx() }
         Column(
             Modifier.horizontalScroll(scroll).width(contentW).padding(top = 2.dp),
             verticalArrangement = Arrangement.spacedBy(3.dp)
         ) {
             Ruler(p.totalMs, vm.zoom, pxPerMs, half)
-            Track(clipItems, Color(0xFF3D6FD8), half, dpPerMs, pxPerMs, sel, vm)
-            Track(subItems, Color(0xFFE0A526), half, dpPerMs, pxPerMs, sel, vm)
-            Track(textItems, Color(0xFF8E55D6), half, dpPerMs, pxPerMs, sel, vm)
-            Track(imageItems, Color(0xFF2FA36B), half, dpPerMs, pxPerMs, sel, vm)
-            Track(audioItems, Color(0xFFD64F86), half, dpPerMs, pxPerMs, sel, vm)
+            Track(clipItems, Color(0xFF3D6FD8), half, dpPerMs, pxPerMs, sel, vm, scroll, viewPx)
+            Track(subItems, Color(0xFFE0A526), half, dpPerMs, pxPerMs, sel, vm, scroll, viewPx)
+            Track(textItems, Color(0xFF8E55D6), half, dpPerMs, pxPerMs, sel, vm, scroll, viewPx)
+            Track(imageItems, Color(0xFF2FA36B), half, dpPerMs, pxPerMs, sel, vm, scroll, viewPx)
+            Track(audioItems, Color(0xFFD64F86), half, dpPerMs, pxPerMs, sel, vm, scroll, viewPx)
         }
         // feststehender Playhead in der Mitte
         Box(Modifier.align(Alignment.TopCenter).width(2.dp).fillMaxHeight().background(Color.White))
@@ -102,17 +108,20 @@ private fun Ruler(totalMs: Long, dpPerSec: Float, pxPerMs: Float, half: Dp) {
 @Composable
 private fun Track(
     items: List<TItem>, color: Color, half: Dp, dpPerMs: Float, pxPerMs: Float,
-    selected: Selection?, vm: EditorViewModel
+    selected: Selection?, vm: EditorViewModel, scroll: ScrollState, viewPx: Float
 ) {
     Box(Modifier.fillMaxWidth().height(rowH).pointerInput(Unit) { detectTapGestures { vm.select(null) } }) {
         items.forEach { item ->
-            key(item.id) { ItemBox(item, color, half, dpPerMs, pxPerMs, selected?.kind == item.kind && selected.id == item.id, vm) }
+            key(item.id) { ItemBox(item, color, half, dpPerMs, pxPerMs, selected?.kind == item.kind && selected.id == item.id, vm, scroll, viewPx) }
         }
     }
 }
 
 @Composable
-private fun ItemBox(item: TItem, color: Color, half: Dp, dpPerMs: Float, pxPerMs: Float, sel: Boolean, vm: EditorViewModel) {
+private fun ItemBox(
+    item: TItem, color: Color, half: Dp, dpPerMs: Float, pxPerMs: Float, sel: Boolean,
+    vm: EditorViewModel, scroll: ScrollState, viewPx: Float
+) {
     val shape = RoundedCornerShape(6.dp)
     val px by rememberUpdatedState(pxPerMs)
     Box(
@@ -134,9 +143,12 @@ private fun ItemBox(item: TItem, color: Color, half: Dp, dpPerMs: Float, pxPerMs
                 )
             }
     ) {
+        if (item.uri != null) ThumbStrip(item, vm, scroll, half, px, viewPx)
         Text(
             item.label, color = Color.White, fontSize = 11.sp, maxLines = 1,
-            modifier = Modifier.align(Alignment.CenterStart).padding(start = if (sel) 20.dp else 8.dp, end = 4.dp)
+            modifier = Modifier.align(Alignment.CenterStart)
+                .padding(start = if (sel) 20.dp else 4.dp, end = 4.dp)
+                .then(if (item.uri != null) Modifier.background(Color(0x99000000), RoundedCornerShape(4.dp)).padding(horizontal = 4.dp) else Modifier)
         )
         if (sel) {
             Handle(Alignment.CenterStart, px, vm) { vm.trimStart(item.kind, item.id, it) }
@@ -159,4 +171,40 @@ private fun BoxScope.Handle(align: Alignment, pxPerMs: Float, vm: EditorViewMode
                 ) { ch, dx -> ch.consume(); cb(dx / px) }
             }
     )
+}
+
+/** Zeichnet nur die gerade sichtbaren Vorschaubilder eines Clips. */
+@Composable
+private fun ThumbStrip(item: TItem, vm: EditorViewModel, scroll: ScrollState, half: Dp, pxPerMs: Float, viewPx: Float) {
+    Canvas(Modifier.fillMaxSize()) {
+        val tileW = 48.dp.toPx()
+        val itemLeft = half.toPx() + item.startMs * pxPerMs
+        val lo = (scroll.value - itemLeft).coerceAtLeast(0f)
+        val hi = minOf(size.width, scroll.value + viewPx - itemLeft)
+        if (hi <= lo || size.height <= 0f) return@Canvas
+        val tileAspect = tileW / size.height
+        var i = (lo / tileW).toInt()
+        while (i * tileW < hi) {
+            val srcMs = item.inMs + ((i * tileW + tileW / 2) / pxPerMs).toLong()
+            val bmp = vm.thumbs.get(item.uri!!, (srcMs / 1000).toInt())
+            val dx = i * tileW
+            val dw = minOf(tileW, size.width - dx)
+            if (bmp != null && dw >= 1f) {
+                val bAspect = bmp.width.toFloat() / bmp.height
+                var sw: Int; var sh: Int
+                if (bAspect > tileAspect) { sh = bmp.height; sw = (bmp.height * tileAspect).toInt() }
+                else { sw = bmp.width; sh = (bmp.width / tileAspect).toInt() }
+                sw = (sw * dw / tileW).toInt().coerceAtLeast(1)
+                sh = sh.coerceAtLeast(1)
+                drawImage(
+                    bmp,
+                    srcOffset = IntOffset((bmp.width - sw) / 2, (bmp.height - sh) / 2),
+                    srcSize = IntSize(sw, sh),
+                    dstOffset = IntOffset(dx.roundToInt(), 0),
+                    dstSize = IntSize(dw.roundToInt(), size.height.roundToInt())
+                )
+            }
+            i++
+        }
+    }
 }

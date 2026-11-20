@@ -10,6 +10,8 @@ import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
+import kotlinx.coroutines.flow.collectLatest
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.Dispatchers
@@ -17,7 +19,9 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.io.File
 import java.util.Collections
+import java.util.UUID
 
 private const val MIN = 200L
 
@@ -25,6 +29,7 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
     val engine = PreviewEngine(app)
     val images = ImageCache(app)
     val painter = OverlayPainter { images.get(it) }
+    val thumbs = ThumbCache(app)
 
     var project by mutableStateOf(Project()); private set
     var posMs by mutableLongStateOf(0L); private set
@@ -34,6 +39,9 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
     var busy by mutableStateOf<String?>(null); private set
     var busyProgress by mutableFloatStateOf(-1f); private set
     var message by mutableStateOf<String?>(null)
+    var showProjects by mutableStateOf(false)
+    var projectList by mutableStateOf<List<ProjectInfo>>(emptyList()); private set
+    var currentId: String = ""; private set
 
     private val undoStack = ArrayDeque<Project>()
     private var nextId = 1L
@@ -45,6 +53,16 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
     private data class Meta(val uri: String, val dur: Long, val w: Int, val h: Int)
 
     init {
+        val id = ProjectStore.lastId(app) ?: ProjectStore.newId().also { ProjectStore.save(app, it, Project()) }
+        currentId = id
+        ProjectStore.setLast(app, id)
+        applyLoaded(ProjectStore.load(app, id) ?: Project())
+        viewModelScope.launch {
+            snapshotFlow { project }.collectLatest { p ->
+                delay(600)
+                withContext(Dispatchers.IO) { try { ProjectStore.save(getApplication(), currentId, p) } catch (_: Exception) {} }
+            }
+        }
         viewModelScope.launch {
             while (true) {
                 delay(30)
@@ -57,7 +75,7 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    override fun onCleared() { engine.release() }
+    override fun onCleared() { saveNow(); engine.release(); thumbs.release() }
 
     private fun nid() = nextId++
     private fun snap() { undoStack.addLast(project); if (undoStack.size > 50) undoStack.removeFirst() }
@@ -108,10 +126,80 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
             ?.use { c -> if (c.moveToFirst()) c.getString(0) else null }
     } catch (e: Exception) { null } ?: "Musik"
 
+    /** Kopiert eine ausgewaehlte Datei in den App-Speicher, damit sie nach einem Neustart noch da ist. */
+    private fun importFile(u: Uri, ext: String): String? = try {
+        val f = File(ProjectStore.mediaDir(getApplication(), currentId), "${UUID.randomUUID()}.$ext")
+        getApplication<Application>().contentResolver.openInputStream(u)!!.use { i -> f.outputStream().use { i.copyTo(it) } }
+        Uri.fromFile(f).toString()
+    } catch (e: Exception) { null }
+
+    // ---------- Projekte ----------
+    private fun applyLoaded(loaded: Project) {
+        fun ok(u: String) = Uri.parse(u).path?.let { File(it).exists() } ?: false
+        val p = loaded.copy(
+            clips = loaded.clips.filter { ok(it.uri) },
+            images = loaded.images.filter { ok(it.uri) },
+            audios = loaded.audios.filter { ok(it.uri) }
+        )
+        undoStack.clear(); selection = null; posMs = 0
+        project = p
+        nextId = (p.clips.map { it.id } + p.texts.map { it.id } + p.images.map { it.id } +
+            p.audios.map { it.id } + p.subs.map { it.id }).maxOrNull()?.plus(1) ?: 1L
+        engine.setClips(p.clips, 0)
+    }
+
+    private fun saveNow() { try { ProjectStore.save(getApplication(), currentId, project) } catch (_: Exception) {} }
+
+    private fun switchTo(id: String) {
+        engine.player.pause()
+        currentId = id
+        ProjectStore.setLast(getApplication(), id)
+        applyLoaded(ProjectStore.load(getApplication(), id) ?: Project())
+        showProjects = false
+    }
+
+    private fun refreshList() {
+        viewModelScope.launch { projectList = withContext(Dispatchers.IO) { ProjectStore.list(getApplication()) } }
+    }
+
+    fun openList() { saveNow(); showProjects = true; refreshList() }
+
+    fun openProject(id: String) {
+        if (id == currentId) { showProjects = false; return }
+        saveNow(); switchTo(id)
+    }
+
+    fun createProject() {
+        saveNow()
+        val id = ProjectStore.newId()
+        ProjectStore.save(getApplication(), id, Project())
+        switchTo(id)
+    }
+
+    fun deleteProject(id: String) {
+        ProjectStore.delete(getApplication(), id)
+        if (id == currentId) {
+            val other = ProjectStore.list(getApplication()).firstOrNull()?.id
+            if (other != null) switchTo(other).also { showProjects = true }
+            else { val nid = ProjectStore.newId(); ProjectStore.save(getApplication(), nid, Project()); switchTo(nid); showProjects = true }
+        }
+        refreshList()
+    }
+
+    fun renameProject(id: String, name: String) {
+        val n = name.trim().ifEmpty { "Projekt" }
+        if (id == currentId) { project = project.copy(name = n); saveNow() }
+        else ProjectStore.load(getApplication(), id)?.let { ProjectStore.save(getApplication(), id, it.copy(name = n)) }
+        refreshList()
+    }
+
     fun addVideos(uris: List<Uri>) {
         if (uris.isEmpty()) return
         viewModelScope.launch {
-            val metas = withContext(Dispatchers.IO) { uris.mapNotNull { probe(it) } }
+            busy = "Video wird importiert ..."; busyProgress = -1f
+            val metas = try {
+                withContext(Dispatchers.IO) { uris.mapNotNull { u -> importFile(u, "mp4")?.let { probe(Uri.parse(it)) } } }
+            } finally { busy = null }
             if (metas.isEmpty()) { message = "Video konnte nicht gelesen werden."; return@launch }
             snap()
             var p = project
@@ -143,11 +231,12 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
     fun addImage(uri: Uri) {
         if (project.clips.isEmpty()) { message = "Zuerst ein Video hinzufuegen."; return }
         viewModelScope.launch {
-            withContext(Dispatchers.IO) { images.get(uri.toString()) }
+            val local = withContext(Dispatchers.IO) { importFile(uri, "jpg")?.also { images.get(it) } }
+            if (local == null) { message = "Bild konnte nicht gelesen werden."; return@launch }
             snap()
             val (s, d) = slot()
             val id = nid()
-            set(project.copy(images = project.images + ImageItem(id, uri.toString(), s, d)))
+            set(project.copy(images = project.images + ImageItem(id, local, s, d)))
             selection = Selection(Kind.IMAGE, id)
         }
     }
@@ -155,15 +244,17 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
     fun addAudio(uri: Uri) {
         if (project.clips.isEmpty()) { message = "Zuerst ein Video hinzufuegen."; return }
         viewModelScope.launch {
-            val meta = withContext(Dispatchers.IO) { probe(uri) }
             val name = withContext(Dispatchers.IO) { nameOf(uri) }
+            val meta = withContext(Dispatchers.IO) {
+                importFile(uri, name.substringAfterLast('.', "mp3").take(5))?.let { probe(Uri.parse(it)) }
+            }
             if (meta == null) { message = "Audio konnte nicht gelesen werden."; return@launch }
             val total = project.totalMs
             val start = posMs.coerceAtMost(total - MIN)
             val dur = minOf(meta.dur, total - start)
             snap()
             val id = nid()
-            set(project.copy(audios = project.audios + AudioItem(id, uri.toString(), name, meta.dur, start, 0, dur)))
+            set(project.copy(audios = project.audios + AudioItem(id, meta.uri, name, meta.dur, start, 0, dur)))
             selection = Selection(Kind.AUDIO, id)
         }
     }

@@ -54,7 +54,8 @@ data class Project(
     val audios: List<AudioItem> = emptyList(),
     val subs: List<Subtitle> = emptyList(),
     val subStyle: SubStyle = SubStyle(),
-    val aspect: AspectPreset = AspectPreset.PORTRAIT
+    val aspect: AspectPreset = AspectPreset.PORTRAIT,
+    val name: String = "Neues Projekt"
 ) {
     val totalMs: Long get() = clips.sumOf { it.durMs }
 }

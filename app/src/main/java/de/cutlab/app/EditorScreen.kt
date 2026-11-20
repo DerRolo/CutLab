@@ -41,13 +41,15 @@ private val palette = listOf(0xFFFFFFFF, 0xFFFFD400, 0xFF00E5FF, 0xFFFF4081, 0xF
 fun EditorScreen(vm: EditorViewModel = viewModel()) {
     var editing by remember { mutableStateOf<Selection?>(null) }
     var showLang by remember { mutableStateOf(false) }
+    var renaming by remember { mutableStateOf(false) }
 
     val pickVideo = rememberLauncherForActivityResult(ActivityResultContracts.PickMultipleVisualMedia(10)) { vm.addVideos(it) }
     val pickImage = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { it?.let(vm::addImage) }
     val pickAudio = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { it?.let(vm::addAudio) }
 
-    Column(Modifier.fillMaxSize().background(Color(0xFF101014)).systemBarsPadding()) {
-        TopBar(vm)
+    if (vm.showProjects) ProjectsScreen(vm)
+    else Column(Modifier.fillMaxSize().background(Color(0xFF101014)).systemBarsPadding()) {
+        TopBar(vm) { renaming = true }
         PreviewArea(vm, Modifier.weight(1f))
         Transport(vm)
         Timeline(vm, Modifier.fillMaxWidth().height(215.dp))
@@ -120,6 +122,17 @@ fun EditorScreen(vm: EditorViewModel = viewModel()) {
         )
     }
 
+    if (renaming) {
+        var name by remember { mutableStateOf(vm.project.name) }
+        AlertDialog(
+            onDismissRequest = { renaming = false },
+            title = { Text("Projektname") },
+            text = { OutlinedTextField(name, { name = it }, singleLine = true) },
+            confirmButton = { TextButton(onClick = { vm.renameProject(vm.currentId, name); renaming = false }) { Text("OK") } },
+            dismissButton = { TextButton(onClick = { renaming = false }) { Text("Abbrechen") } }
+        )
+    }
+
     vm.message?.let { m ->
         AlertDialog(
             onDismissRequest = { vm.message = null },
@@ -130,10 +143,10 @@ fun EditorScreen(vm: EditorViewModel = viewModel()) {
 }
 
 @Composable
-private fun TopBar(vm: EditorViewModel) {
+private fun TopBar(vm: EditorViewModel, onRename: () -> Unit) {
     Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-        Text("CutLab", color = Color.White, fontSize = 20.sp)
-        Spacer(Modifier.weight(1f))
+        IconButton(onClick = { vm.openList() }) { Icon(Icons.Default.FolderOpen, "Projekte", tint = Color.White) }
+        Text(vm.project.name, color = Color.White, fontSize = 18.sp, maxLines = 1, modifier = Modifier.weight(1f).clickable(onClick = onRename).padding(8.dp))
         IconButton(onClick = { vm.undo() }) { Icon(Icons.Default.Undo, "Rueckgaengig", tint = Color.White) }
         Button(onClick = { vm.export() }) { Icon(Icons.Default.FileDownload, null); Spacer(Modifier.width(4.dp)); Text("Export") }
     }
