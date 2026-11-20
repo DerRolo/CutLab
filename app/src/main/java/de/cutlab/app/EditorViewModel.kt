@@ -20,10 +20,15 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
+import kotlin.math.abs
 import java.util.Collections
 import java.util.UUID
 
 private const val MIN = 200L
+
+/** Magnetische Hilfslinien (Anteil von Breite/Hoehe): Raender, Goldener Schnitt, Mitte. */
+val GUIDES_X = floatArrayOf(0.1f, 0.5f, 0.9f)
+val GUIDES_Y = floatArrayOf(0.1f, 0.382f, 0.5f, 0.618f, 0.9f)
 
 class EditorViewModel(app: Application) : AndroidViewModel(app) {
     val engine = PreviewEngine(app)
@@ -40,6 +45,14 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
     var busyProgress by mutableFloatStateOf(-1f); private set
     var message by mutableStateOf<String?>(null)
     var showProjects by mutableStateOf(false)
+    var snapX by mutableStateOf<Float?>(null); private set
+    var snapY by mutableStateOf<Float?>(null); private set
+    var dragging by mutableStateOf(false); private set
+    var pz by mutableFloatStateOf(1f); private set       // Zoom der Vorschau (nur Ansicht, nicht Export)
+    var pox by mutableFloatStateOf(0f); private set
+    var poy by mutableFloatStateOf(0f); private set
+    private var rawX = 0f
+    private var rawY = 0f
     var projectList by mutableStateOf<List<ProjectInfo>>(emptyList()); private set
     var currentId: String = ""; private set
 
@@ -141,7 +154,7 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
             images = loaded.images.filter { ok(it.uri) },
             audios = loaded.audios.filter { ok(it.uri) }
         )
-        undoStack.clear(); selection = null; posMs = 0
+        undoStack.clear(); selection = null; posMs = 0; resetPreviewZoom()
         project = p
         nextId = (p.clips.map { it.id } + p.texts.map { it.id } + p.images.map { it.id } +
             p.audios.map { it.id } + p.subs.map { it.id }).maxOrNull()?.plus(1) ?: 1L
@@ -307,21 +320,58 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     // ---------- Live-Aenderungen (Gesten, Slider) ----------
+    fun beginTransform() {
+        val s = selection ?: return
+        val p = project
+        when (s.kind) {
+            Kind.TEXT -> p.texts.find { it.id == s.id }?.let { rawX = it.x; rawY = it.y }
+            Kind.IMAGE -> p.images.find { it.id == s.id }?.let { rawX = it.x; rawY = it.y }
+            Kind.SUB -> { rawX = 0.5f; rawY = p.subStyle.y }
+            else -> {}
+        }
+        dragging = true
+    }
+
+    fun endTransform() { dragging = false; snapX = null; snapY = null }
+
+    private fun snapTo(v: Float, g: FloatArray): Pair<Float, Float?> {
+        val n = g.minByOrNull { abs(it - v) } ?: return v to null
+        return if (abs(n - v) < 0.02f) n to n else v to null
+    }
+
+    /** Verschieben/Skalieren eines Overlays; rastet sanft an den Hilfslinien ein, laesst sich aber weiterziehen. */
     fun transform(dx: Float, dy: Float, z: Float) {
         val s = selection ?: return
+        rawX = (rawX + dx).coerceIn(0f, 1f)
+        rawY = (rawY + dy).coerceIn(0f, 1f)
+        val (sx, gx) = snapTo(rawX, GUIDES_X)
+        val (sy, gy) = snapTo(rawY, GUIDES_Y)
+        snapX = if (s.kind == Kind.SUB) null else gx
+        snapY = gy
         live { p ->
             when (s.kind) {
                 Kind.TEXT -> p.copy(texts = p.texts.map {
-                    if (it.id == s.id) it.copy(x = (it.x + dx).coerceIn(0f, 1f), y = (it.y + dy).coerceIn(0f, 1f), size = (it.size * z).coerceIn(0.02f, 0.25f)) else it
+                    if (it.id == s.id) it.copy(x = sx, y = sy, size = (it.size * z).coerceIn(0.02f, 0.25f)) else it
                 })
                 Kind.IMAGE -> p.copy(images = p.images.map {
-                    if (it.id == s.id) it.copy(x = (it.x + dx).coerceIn(0f, 1f), y = (it.y + dy).coerceIn(0f, 1f), scale = (it.scale * z).coerceIn(0.05f, 1.5f)) else it
+                    if (it.id == s.id) it.copy(x = sx, y = sy, scale = (it.scale * z).coerceIn(0.05f, 1.5f)) else it
                 })
-                Kind.SUB -> p.copy(subStyle = p.subStyle.copy(y = (p.subStyle.y + dy).coerceIn(0.05f, 0.95f), size = (p.subStyle.size * z).coerceIn(0.025f, 0.15f)))
+                Kind.SUB -> p.copy(subStyle = p.subStyle.copy(y = sy, size = (p.subStyle.size * z).coerceIn(0.025f, 0.15f)))
                 else -> p
             }
         }
     }
+
+    fun zoomPreview(z: Float, panX: Float, panY: Float, w: Float, h: Float) {
+        pz = (pz * z).coerceIn(1f, 5f)
+        val mx = (pz - 1f) * w / 2f
+        val my = (pz - 1f) * h / 2f
+        pox = (pox + panX).coerceIn(-mx, mx)
+        poy = (poy + panY).coerceIn(-my, my)
+    }
+
+    fun resetPreviewZoom() { pz = 1f; pox = 0f; poy = 0f }
+
     fun setTextSize(id: Long, v: Float) = live { p -> p.copy(texts = p.texts.map { if (it.id == id) it.copy(size = v) else it }) }
     fun setTextColor(id: Long, c: Int) = live { p -> p.copy(texts = p.texts.map { if (it.id == id) it.copy(color = c) else it }) }
     fun setImageScale(id: Long, v: Float) = live { p -> p.copy(images = p.images.map { if (it.id == id) it.copy(scale = v) else it }) }

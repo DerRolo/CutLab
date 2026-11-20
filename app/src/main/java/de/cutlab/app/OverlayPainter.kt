@@ -73,6 +73,28 @@ class OverlayPainter(private val images: (String) -> Bitmap?) {
         bounds[im.id] = r
     }
 
+    private class Piece(val text: String, val word: Int, val glue: Boolean)
+
+    /** Trennt ein zu langes Wort mit Bindestrich (bevorzugt nach einem Vokal). */
+    private fun hyphenate(word: String, maxW: Float): List<String> {
+        if (fill.measureText(word) <= maxW) return listOf(word)
+        val vowels = "aeiouyäöüAEIOUÄÖÜ"
+        val hy = fill.measureText("-")
+        val out = ArrayList<String>()
+        var rest = word
+        while (rest.isNotEmpty()) {
+            if (fill.measureText(rest) <= maxW) { out.add(rest); break }
+            var n = rest.length
+            while (n > 1 && fill.measureText(rest.substring(0, n)) + hy > maxW) n--
+            var k = n
+            while (k > 2 && k > n - 3 && rest[k - 1] !in vowels) k--
+            val cut = if (rest[k - 1] in vowels) k else n
+            out.add(rest.substring(0, cut) + "-")
+            rest = rest.substring(cut)
+        }
+        return out
+    }
+
     private fun block(
         c: Canvas, w: Int, h: Int, id: Long, words: List<String>, active: Int,
         cx: Float, cy: Float, size: Float, base: Int, hi: Int, scale: Float
@@ -81,37 +103,54 @@ class OverlayPainter(private val images: (String) -> Bitmap?) {
         val px = size * h
         fill.textSize = px; stroke.textSize = px; stroke.strokeWidth = px * 0.2f
         val space = fill.measureText(" ")
-        val maxW = w * 0.9f
-        val widths = words.map { fill.measureText(it) }
+        val maxW = w * 0.88f
+
+        val pieces = ArrayList<Piece>()
+        words.forEachIndexed { wi, wd -> hyphenate(wd, maxW).forEachIndexed { k, part -> pieces.add(Piece(part, wi, k > 0)) } }
+        val widths = pieces.map { fill.measureText(it.text) }
+
         val lines = ArrayList<List<Int>>()
         var cur = ArrayList<Int>()
         var curW = 0f
-        for (i in words.indices) {
-            val add = if (cur.isEmpty()) widths[i] else space + widths[i]
+        for (i in pieces.indices) {
+            val add = if (cur.isEmpty() || pieces[i].glue) widths[i] else space + widths[i]
             if (cur.isNotEmpty() && curW + add > maxW) { lines.add(cur); cur = ArrayList(); curW = 0f }
-            curW += if (cur.isEmpty()) widths[i] else space + widths[i]
+            curW += if (cur.isEmpty() || pieces[i].glue) widths[i] else space + widths[i]
             cur.add(i)
         }
         lines.add(cur)
+
+        fun lineW(idxs: List<Int>): Float {
+            var t = 0f
+            idxs.forEachIndexed { k, i -> t += widths[i]; if (k > 0 && !pieces[i].glue) t += space }
+            return t
+        }
         val lh = px * 1.25f
-        val top = cy - lines.size * lh / 2f
+        val total = lines.size * lh
         var maxLine = 0f
+        lines.forEach { maxLine = maxOf(maxLine, lineW(it)) }
+
+        // Block immer komplett im Bild halten
+        val mx = w * 0.03f
+        val cx2 = if (maxLine + 2 * mx < w) cx.coerceIn(maxLine / 2f + mx, w - maxLine / 2f - mx) else w / 2f
+        val cy2 = if (total + 0.04f * h < h) cy.coerceIn(total / 2f + 0.02f * h, h - total / 2f - 0.02f * h) else h / 2f
+        val top = cy2 - total / 2f
+
         c.save()
-        if (scale != 1f) c.scale(scale, scale, cx, cy)
+        if (scale != 1f) c.scale(scale, scale, cx2, cy2)
         lines.forEachIndexed { li, idxs ->
-            val lw = idxs.sumOf { widths[it].toDouble() }.toFloat() + space * (idxs.size - 1)
-            maxLine = maxOf(maxLine, lw)
-            var x = cx - lw / 2f
+            var x = cx2 - lineW(idxs) / 2f
             val y = top + li * lh + px * 0.95f
-            for (i in idxs) {
-                c.drawText(words[i], x, y, stroke)
-                fill.color = if (i == active) hi else base
-                c.drawText(words[i], x, y, fill)
-                x += widths[i] + space
+            idxs.forEachIndexed { k, i ->
+                if (k > 0 && !pieces[i].glue) x += space
+                c.drawText(pieces[i].text, x, y, stroke)
+                fill.color = if (pieces[i].word == active) hi else base
+                c.drawText(pieces[i].text, x, y, fill)
+                x += widths[i]
             }
         }
         c.restore()
-        bounds[id] = RectF(cx - maxLine / 2f - px * 0.2f, top, cx + maxLine / 2f + px * 0.2f, top + lines.size * lh)
+        bounds[id] = RectF(cx2 - maxLine / 2f - px * 0.2f, top, cx2 + maxLine / 2f + px * 0.2f, top + total)
     }
 }
 
