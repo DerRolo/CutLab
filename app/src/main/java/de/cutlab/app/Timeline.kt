@@ -16,7 +16,13 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.ScrollState
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.Text
+import androidx.compose.ui.zIndex
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -42,7 +48,7 @@ data class TItem(
 private val rowH = 36.dp
 
 @Composable
-fun Timeline(vm: EditorViewModel, modifier: Modifier = Modifier) {
+fun Timeline(vm: EditorViewModel, modifier: Modifier = Modifier, onEdit: (Selection) -> Unit = {}) {
     val density = LocalDensity.current
     val dpPerMs = vm.zoom / 1000f
     val pxPerMs = with(density) { dpPerMs.dp.toPx() }
@@ -56,6 +62,8 @@ fun Timeline(vm: EditorViewModel, modifier: Modifier = Modifier) {
         var acc = 0L
         p.clips.mapIndexed { i, c -> TItem(c.id, Kind.CLIP, acc, c.durMs, "Clip ${i + 1}", c.uri, c.inMs).also { acc += c.durMs } }
     }
+    val video2Items = remember(p.videos) { p.videos.filter { it.track == 0 }.map { TItem(it.id, Kind.VIDEO, it.startMs, it.durMs, "Video 2", it.uri, it.inMs) } }
+    val video3Items = remember(p.videos) { p.videos.filter { it.track == 1 }.map { TItem(it.id, Kind.VIDEO, it.startMs, it.durMs, "Video 3", it.uri, it.inMs) } }
     val subItems = remember(p.subs) { p.subs.map { TItem(it.id, Kind.SUB, it.startMs, it.endMs - it.startMs, it.text) } }
     val textItems = remember(p.texts) { p.texts.map { TItem(it.id, Kind.TEXT, it.startMs, it.durMs, it.text) } }
     val imageItems = remember(p.images) { p.images.map { TItem(it.id, Kind.IMAGE, it.startMs, it.durMs, "Bild") } }
@@ -88,13 +96,37 @@ fun Timeline(vm: EditorViewModel, modifier: Modifier = Modifier) {
         ) {
             Ruler(p.totalMs, vm.zoom, pxPerMs, half)
             Track(clipItems, Color(0xFF3D6FD8), half, dpPerMs, pxPerMs, sel, vm, scroll, viewPx)
+            Track(video2Items, Color(0xFF2E9CCA), half, dpPerMs, pxPerMs, sel, vm, scroll, viewPx)
+            Track(video3Items, Color(0xFF5C6BC0), half, dpPerMs, pxPerMs, sel, vm, scroll, viewPx)
             Track(subItems, Color(0xFFE0A526), half, dpPerMs, pxPerMs, sel, vm, scroll, viewPx)
             Track(textItems, Color(0xFF8E55D6), half, dpPerMs, pxPerMs, sel, vm, scroll, viewPx)
             Track(imageItems, Color(0xFF2FA36B), half, dpPerMs, pxPerMs, sel, vm, scroll, viewPx)
             Track(audioItems, Color(0xFFD64F86), half, dpPerMs, pxPerMs, sel, vm, scroll, viewPx)
         }
+        // gelbe Einrast-Linie, wenn ein Element an etwas andockt
+        Canvas(Modifier.fillMaxSize()) {
+            val g = vm.snapGuideMs
+            if (g != null) {
+                val x = half.toPx() + g * pxPerMs - scroll.value
+                drawLine(Color(0xFFFFEB3B), Offset(x, 0f), Offset(x, size.height), 3f)
+            }
+        }
         // feststehender Playhead in der Mitte
         Box(Modifier.align(Alignment.TopCenter).width(2.dp).fillMaxHeight().background(Color.White))
+        // Bearbeiten / Loeschen fuer das ausgewaehlte Element
+        val s = vm.selection
+        if (s != null) {
+            Row(
+                Modifier.align(Alignment.TopStart).padding(4.dp)
+                    .background(Color(0xDD000000), RoundedCornerShape(20.dp)).padding(horizontal = 2.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                if (s.kind == Kind.TEXT || s.kind == Kind.SUB) {
+                    IconButton(onClick = { onEdit(s) }, modifier = Modifier.size(38.dp)) { Icon(Icons.Default.Edit, "Text bearbeiten", tint = Color.White) }
+                }
+                IconButton(onClick = { vm.deleteSelected() }, modifier = Modifier.size(38.dp)) { Icon(Icons.Default.Delete, "Loeschen", tint = Color(0xFFFF8A80)) }
+            }
+        }
     }
 }
 
@@ -147,9 +179,12 @@ private fun ItemBox(
 ) {
     val shape = RoundedCornerShape(6.dp)
     val px by rememberUpdatedState(pxPerMs)
+    val dragging = item.kind == Kind.CLIP && vm.dragClipId == item.id
+    val dragDp = if (dragging) vm.dragClipMs * dpPerMs else 0f
     Box(
         Modifier
-            .offset(x = half + (item.startMs * dpPerMs).dp)
+            .zIndex(if (dragging) 1f else 0f)
+            .offset(x = half + (item.startMs * dpPerMs + dragDp).dp)
             .width((item.durMs * dpPerMs).dp.coerceAtLeast(12.dp))
             .fillMaxHeight()
             .padding(vertical = 2.dp)
@@ -185,7 +220,12 @@ private fun BoxScope.Handle(align: Alignment, pxPerMs: Float, vm: EditorViewMode
     val px by rememberUpdatedState(pxPerMs)
     val cb by rememberUpdatedState(onDeltaMs)
     Box(
-        Modifier.align(align).width(16.dp).fillMaxHeight().background(Color.White.copy(alpha = 0.85f))
+        Modifier.align(align).width(18.dp).fillMaxHeight().background(Color.White.copy(alpha = 0.9f)),
+        contentAlignment = Alignment.Center
+    ) {
+        Text(if (align == Alignment.CenterStart) "\u2039" else "\u203A", color = Color(0xFF202020), fontSize = 18.sp)
+        Box(
+            Modifier.matchParentSize()
             .pointerInput(Unit) {
                 detectHorizontalDragGestures(
                     onDragStart = { vm.beginDrag() },
@@ -193,7 +233,8 @@ private fun BoxScope.Handle(align: Alignment, pxPerMs: Float, vm: EditorViewMode
                     onDragCancel = { vm.endDrag() }
                 ) { ch, dx -> ch.consume(); cb(dx / px) }
             }
-    )
+        )
+    }
 }
 
 /** Zeichnet nur die gerade sichtbaren Vorschaubilder eines Clips. */

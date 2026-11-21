@@ -4,6 +4,8 @@ import android.content.ContentValues
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.Canvas
+import android.media.MediaMetadataRetriever
+import android.net.Uri
 import android.os.Environment
 import android.os.Handler
 import android.os.Looper
@@ -50,6 +52,7 @@ class Exporter(private val ctx: Context, private val images: ImageCache) {
     private var transformer: Transformer? = null
     private val handler = Handler(Looper.getMainLooper())
     private var running = false
+    private var frameSource: FrameSource? = null
 
     /** Muss auf dem Main-Thread aufgerufen werden. onDone(null) = Erfolg, sonst Fehlertext. */
     fun start(p: Project, onProgress: (Float) -> Unit, onDone: (String?) -> Unit) {
@@ -81,7 +84,25 @@ class Exporter(private val ctx: Context, private val images: ImageCache) {
             seqs.add(b.build())
         }
 
-        val overlay = ProjectOverlay(p, OverlayPainter { images.get(it) }, cw, ch)
+        // Ton der Overlay-Videos
+        for (v in p.videos) {
+            if (v.muted || !v.hasAudio) continue
+            val dur = minOf(v.durMs, total - v.startMs)
+            if (dur < 100) continue
+            val mi = MediaItem.Builder().setUri(v.uri).setClippingConfiguration(
+                MediaItem.ClippingConfiguration.Builder().setStartPositionMs(v.inMs).setEndPositionMs(v.inMs + dur).build()
+            ).build()
+            val item = EditedMediaItem.Builder(mi).setRemoveVideo(true).build()
+            val b = EditedMediaItemSequence.Builder()
+            if (v.startMs > 0) b.addGap(v.startMs * 1000)
+            b.addItem(item)
+            seqs.add(b.build())
+        }
+
+        // Bilder der Overlay-Videos werden Bild fuer Bild in das Overlay gezeichnet
+        val frames = FrameSource(ctx, cw)
+        frameSource = frames
+        val overlay = ProjectOverlay(p, OverlayPainter({ images.get(it) }, { v, ms -> frames.get(v, ms) }), cw, ch)
         val comp = Composition.Builder(seqs).setEffects(
             Effects(
                 emptyList<AudioProcessor>(),
@@ -101,6 +122,7 @@ class Exporter(private val ctx: Context, private val images: ImageCache) {
             .addListener(object : Transformer.Listener {
                 override fun onCompleted(composition: Composition, exportResult: ExportResult) {
                     running = false
+                    frameSource?.release()
                     Thread {
                         val err = try { saveToGallery(out); null } catch (e: Exception) { e.message ?: "Speichern fehlgeschlagen" }
                         out.delete()
@@ -110,6 +132,7 @@ class Exporter(private val ctx: Context, private val images: ImageCache) {
 
                 override fun onError(composition: Composition, exportResult: ExportResult, exportException: ExportException) {
                     running = false
+                    frameSource?.release()
                     out.delete()
                     onDone(exportException.message ?: "Unbekannter Fehler")
                 }
@@ -146,5 +169,32 @@ class Exporter(private val ctx: Context, private val images: ImageCache) {
         r.openOutputStream(uri)!!.use { o -> file.inputStream().use { it.copyTo(o) } }
         v.clear(); v.put(MediaStore.Video.Media.IS_PENDING, 0)
         r.update(uri, v, null, null)
+    }
+}
+
+/** Liefert einzelne Bilder aus Overlay-Videos fuer den Export (24 Bilder pro Sekunde). */
+class FrameSource(private val ctx: Context, private val canvasW: Int) {
+    private val rets = HashMap<Long, MediaMetadataRetriever>()
+    private val last = HashMap<Long, Pair<Long, Bitmap>>()
+
+    @Synchronized
+    fun get(v: VideoItem, srcMs: Long): Bitmap? {
+        val q = srcMs * 24 / 1000
+        last[v.id]?.let { if (it.first == q) return it.second }
+        val r = rets.getOrPut(v.id) { MediaMetadataRetriever().apply { setDataSource(ctx, Uri.parse(v.uri)) } }
+        val dw = (v.scale * canvasW).toInt().coerceAtLeast(16)
+        val dh = (dw / v.aspect).toInt().coerceAtLeast(16)
+        val bmp = try {
+            r.getScaledFrameAtTime(q * 1_000_000L / 24, MediaMetadataRetriever.OPTION_CLOSEST, dw, dh)
+        } catch (e: Exception) { null }
+        if (bmp == null) return last[v.id]?.second
+        last[v.id] = q to bmp
+        return bmp
+    }
+
+    @Synchronized
+    fun release() {
+        rets.values.forEach { try { it.release() } catch (_: Exception) {} }
+        rets.clear(); last.clear()
     }
 }

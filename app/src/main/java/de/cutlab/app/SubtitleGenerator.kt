@@ -8,6 +8,7 @@ import android.net.Uri
 import org.json.JSONObject
 import org.vosk.Model
 import org.vosk.Recognizer
+import java.io.ByteArrayOutputStream
 import java.io.File
 import java.net.HttpURLConnection
 import java.net.URL
@@ -140,9 +141,138 @@ object AudioDecoder {
     }
 }
 
+/** Welche Spracherkennung benutzt wird. */
+enum class AsrEngine(val label: String, val note: String) {
+    WHISPER_SMALL("Genau (Whisper small)", "empfohlen · ca. 190 MB · braucht etwas länger"),
+    WHISPER_BASE("Schnell (Whisper base)", "ca. 60 MB · deutlich schneller, etwas ungenauer"),
+    VOSK("Einfach (Vosk)", "ca. 45 MB · schnell, aber oft falsch")
+}
+
+data class AsrLang(val code: String, val label: String)
+
+object AsrLangs {
+    val list = listOf(
+        AsrLang("auto", "Automatisch erkennen"),
+        AsrLang("de", "Deutsch"), AsrLang("en", "Englisch"), AsrLang("fr", "Französisch"),
+        AsrLang("es", "Spanisch"), AsrLang("it", "Italienisch"), AsrLang("tr", "Türkisch"),
+        AsrLang("ru", "Russisch"), AsrLang("pt", "Portugiesisch"), AsrLang("nl", "Niederländisch"),
+        AsrLang("pl", "Polnisch"), AsrLang("uk", "Ukrainisch"), AsrLang("ar", "Arabisch"),
+        AsrLang("ja", "Japanisch"), AsrLang("zh", "Chinesisch")
+    )
+}
+
+/** Native Whisper-Bibliothek (whisper.cpp). Ist sie nicht eingebaut, bleibt available = false. */
+object WhisperLib {
+    val available: Boolean by lazy {
+        try { System.loadLibrary("cutlab_whisper"); nativeAvailable() } catch (e: Throwable) { false }
+    }
+
+    private external fun nativeAvailable(): Boolean
+    external fun initContext(modelPath: String): Long
+    external fun freeContext(ctx: Long)
+    external fun transcribe(ctx: Long, audio: FloatArray, lang: String, prompt: String, threads: Int): Array<String>?
+    external fun abort()
+}
+
+object WhisperModels {
+    private fun fileName(e: AsrEngine) = if (e == AsrEngine.WHISPER_SMALL) "ggml-small-q5_1.bin" else "ggml-base-q5_1.bin"
+
+    fun ensure(ctx: Context, e: AsrEngine, onProgress: (Float) -> Unit): File {
+        val dir = File(ctx.filesDir, "whisper").apply { mkdirs() }
+        val name = fileName(e)
+        val f = File(dir, name)
+        if (f.exists() && f.length() > 10_000_000) return f
+        val tmp = File(dir, "$name.part")
+        val conn = URL("https://huggingface.co/ggerganov/whisper.cpp/resolve/main/$name").openConnection() as HttpURLConnection
+        conn.connectTimeout = 20000; conn.readTimeout = 60000
+        conn.setRequestProperty("User-Agent", "CutLab")
+        if (conn.responseCode != 200) error("Modell-Download fehlgeschlagen (HTTP ${conn.responseCode})")
+        val total = conn.contentLengthLong
+        conn.inputStream.use { ins ->
+            tmp.outputStream().use { out ->
+                val buf = ByteArray(64 * 1024); var read = 0L
+                while (true) {
+                    val n = ins.read(buf); if (n < 0) break
+                    out.write(buf, 0, n); read += n
+                    onProgress(if (total > 0) read.toFloat() / total else -1f)
+                }
+            }
+        }
+        if (!tmp.renameTo(f)) error("Modell konnte nicht gespeichert werden")
+        return f
+    }
+}
+
 object SubtitleGenerator {
-    /** Blockierend -> in Dispatchers.Default/IO aufrufen. IDs werden vom ViewModel vergeben. */
-    fun generate(ctx: Context, clips: List<Clip>, lang: VoskLang, onStage: (String, Float) -> Unit): List<Subtitle> {
+    /** Blockierend -> in Dispatchers.Default aufrufen. IDs werden vom ViewModel vergeben. */
+    fun generate(
+        ctx: Context, clips: List<Clip>, engine: AsrEngine, langCode: String, hint: String,
+        onStage: (String, Float) -> Unit
+    ): List<Subtitle> {
+        val words = when (engine) {
+            AsrEngine.VOSK -> {
+                if (langCode == "auto") error("Vosk braucht eine feste Sprache. Bitte oben eine Sprache wählen.")
+                val l = VoskModels.langs.find { it.code == langCode } ?: error("Für diese Sprache gibt es kein Vosk-Modell.")
+                vosk(ctx, clips, l, onStage)
+            }
+            else -> whisper(ctx, clips, engine, langCode, hint, onStage)
+        }
+        return group(words)
+    }
+
+    private fun whisper(
+        ctx: Context, clips: List<Clip>, engine: AsrEngine, lang: String, hint: String,
+        onStage: (String, Float) -> Unit
+    ): List<Word> {
+        if (!WhisperLib.available) error("Whisper ist in dieser App-Version nicht enthalten. Bitte \"Einfach (Vosk)\" wählen.")
+        val model = WhisperModels.ensure(ctx, engine) { onStage("Sprachmodell wird geladen ...", it) }
+        onStage("Modell wird gestartet ...", -1f)
+        val handle = WhisperLib.initContext(model.absolutePath)
+        if (handle == 0L) error("Whisper-Modell konnte nicht geladen werden.")
+        val words = mutableListOf<Word>()
+        val threads = Runtime.getRuntime().availableProcessors().coerceIn(2, 6)
+        try {
+            var offset = 0L
+            for ((ci, c) in clips.withIndex()) {
+                onStage("Audio wird vorbereitet (${ci + 1}/${clips.size}) ...", -1f)
+                val pcm = ByteArrayOutputStream()
+                AudioDecoder.decode(ctx, Uri.parse(c.uri), c.inMs, c.outMs, { b, n -> pcm.write(b, 0, n) }, { })
+                val bytes = pcm.toByteArray()
+                val n = bytes.size / 2
+                if (n < 8000) { offset += c.durMs; continue }
+                val samples = FloatArray(n)
+                for (i in 0 until n) {
+                    val lo = bytes[2 * i].toInt() and 0xFF
+                    val hi = bytes[2 * i + 1].toInt()
+                    samples[i] = ((hi shl 8) or lo).toShort() / 32768f
+                }
+                onStage("Sprache wird erkannt (${ci + 1}/${clips.size}) ...", -1f)
+                val rows = WhisperLib.transcribe(handle, samples, lang, hint.trim(), threads)
+                    ?: error("Spracherkennung fehlgeschlagen oder abgebrochen.")
+                for (r in rows) {
+                    val a = r.indexOf('|'); val b = r.indexOf('|', a + 1)
+                    if (a < 0 || b < 0) continue
+                    val t0 = r.substring(0, a).toLongOrNull() ?: continue
+                    val t1 = r.substring(a + 1, b).toLongOrNull() ?: continue
+                    val txt = r.substring(b + 1).trim()
+                    if (txt.isEmpty()) continue
+                    // Platzhalter wie [BLANK_AUDIO] oder (Musik) ueberspringen
+                    if ((txt.startsWith("[") && txt.endsWith("]")) || (txt.startsWith("(") && txt.endsWith(")")) || txt.startsWith("\u266A")) continue
+                    // reine Satzzeichen an das vorige Wort haengen
+                    if (txt.none { it.isLetterOrDigit() } && words.isNotEmpty()) {
+                        val last = words.removeAt(words.lastIndex)
+                        words.add(last.copy(text = last.text + txt, endMs = maxOf(last.endMs, offset + t1)))
+                        continue
+                    }
+                    words.add(Word(txt, offset + t0, maxOf(offset + t1, offset + t0 + 80)))
+                }
+                offset += c.durMs
+            }
+        } finally { WhisperLib.freeContext(handle) }
+        return words
+    }
+
+    private fun vosk(ctx: Context, clips: List<Clip>, lang: VoskLang, onStage: (String, Float) -> Unit): List<Word> {
         val dir = VoskModels.ensure(ctx, lang) { onStage("Sprachmodell wird geladen ...", it) }
         onStage("Sprache wird erkannt ...", 0f)
         val model = Model(dir.absolutePath)
@@ -169,9 +299,10 @@ object SubtitleGenerator {
                 offset += c.durMs
             }
         } finally { model.close() }
-        return group(words)
+        return words
     }
 
+    /** Woerter zu gut lesbaren Untertitel-Zeilen zusammenfassen (Satzende, Pausen, Laenge). */
     private fun group(words: List<Word>): List<Subtitle> {
         val out = mutableListOf<Subtitle>()
         var cur = mutableListOf<Word>()
@@ -182,9 +313,12 @@ object SubtitleGenerator {
         }
         for (w in words) {
             if (cur.isNotEmpty()) {
+                val last = cur.last().text
+                val sentenceEnd = last.endsWith(".") || last.endsWith("?") || last.endsWith("!") || last.endsWith("\u2026")
+                val comma = last.endsWith(",") && cur.size >= 3
                 val gap = w.startMs - cur.last().endMs
                 val len = cur.sumOf { it.text.length + 1 }
-                if (gap > 700 || cur.size >= 6 || len + w.text.length > 32 || w.endMs - cur.first().startMs > 3500) flush()
+                if (gap > 700 || sentenceEnd || comma || cur.size >= 6 || len + w.text.length > 32 || w.endMs - cur.first().startMs > 3500) flush()
             }
             cur.add(w)
         }

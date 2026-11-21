@@ -2,7 +2,7 @@ package de.cutlab.app
 
 import android.graphics.Color
 
-enum class Kind { CLIP, SUB, TEXT, IMAGE, AUDIO }
+enum class Kind { CLIP, SUB, TEXT, IMAGE, AUDIO, VIDEO }
 data class Selection(val kind: Kind, val id: Long)
 
 /** Hauptspur: Videoclips hintereinander. */
@@ -14,13 +14,26 @@ data class TextItem(
     val id: Long, val text: String, val startMs: Long, val durMs: Long,
     val x: Float = 0.5f, val y: Float = 0.5f,
     val size: Float = 0.06f,          // Anteil der Bildhoehe
-    val color: Int = Color.WHITE
+    val color: Int = Color.WHITE,
+    val outline: Int = Color.BLACK      // Konturfarbe (Alpha 0 = keine Kontur)
 )
 
 data class ImageItem(
     val id: Long, val uri: String, val startMs: Long, val durMs: Long,
     val x: Float = 0.5f, val y: Float = 0.5f,
     val scale: Float = 0.4f           // Breite als Anteil der Bildbreite
+)
+
+/** Zusaetzliches Video auf einer Overlay-Spur (Bild-in-Bild, Ueberblenden). */
+data class VideoItem(
+    val id: Long, val uri: String, val srcDurMs: Long, val aspect: Float,
+    val startMs: Long, val inMs: Long, val durMs: Long,
+    val x: Float = 0.5f, val y: Float = 0.5f,
+    val scale: Float = 0.5f,          // Breite als Anteil der Bildbreite
+    val track: Int = 0,               // 0 = "Video 2", 1 = "Video 3" (hoehere Spur liegt oben)
+    val fadeMs: Long = 0,             // Ein-/Ausblenden
+    val muted: Boolean = false,
+    val hasAudio: Boolean = true
 )
 
 data class AudioItem(
@@ -40,7 +53,8 @@ data class SubStyle(
     val y: Float = 0.78f,
     val color: Int = Color.WHITE,
     val highlight: Int = 0xFFFFD400.toInt(),
-    val x: Float = 0.5f
+    val x: Float = 0.5f,
+    val outline: Int = Color.BLACK
 )
 
 enum class AspectPreset(val label: String, val w: Int, val h: Int) {
@@ -53,6 +67,7 @@ data class Project(
     val texts: List<TextItem> = emptyList(),
     val images: List<ImageItem> = emptyList(),
     val audios: List<AudioItem> = emptyList(),
+    val videos: List<VideoItem> = emptyList(),
     val subs: List<Subtitle> = emptyList(),
     val subStyle: SubStyle = SubStyle(),
     val aspect: AspectPreset = AspectPreset.PORTRAIT,

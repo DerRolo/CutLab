@@ -10,6 +10,7 @@ import kotlin.math.abs
 class PreviewEngine(private val ctx: Context) {
     val player: ExoPlayer = ExoPlayer.Builder(ctx).build()
     private val audio = HashMap<Long, ExoPlayer>()
+    private val vids = HashMap<Long, ExoPlayer>()          // Player der Overlay-Videos
     private var sig: List<Triple<String, Long, Long>> = emptyList()
 
     fun setClips(clips: List<Clip>, posMs: Long) {
@@ -69,8 +70,38 @@ class PreviewEngine(private val ctx: Context) {
         }
     }
 
+    /** Player fuer ein Overlay-Video (wird bei Bedarf angelegt). */
+    fun videoPlayer(v: VideoItem): ExoPlayer = vids.getOrPut(v.id) {
+        ExoPlayer.Builder(ctx).build().apply {
+            setMediaItem(MediaItem.fromUri(v.uri)); prepare()
+            volume = if (v.muted) 0f else 1f
+        }
+    }
+
+    /** Haelt Overlay-Videos synchron zur Timeline; Player weit ausserhalb des Zeitfensters werden freigegeben. */
+    fun syncVideos(items: List<VideoItem>, playing: Boolean, pos: Long) {
+        val live = items.filter { pos >= it.startMs - 600 && pos < it.startMs + it.durMs + 300 }.map { it.id }.toSet()
+        vids.keys.filter { it !in live }.forEach { vids.remove(it)?.release() }
+        for (v in items) {
+            if (v.id !in live) continue
+            val pl = videoPlayer(v)
+            pl.volume = if (v.muted) 0f else 1f
+            val inside = pos >= v.startMs && pos < v.startMs + v.durMs
+            val want = v.inMs + (pos - v.startMs).coerceAtLeast(0L)
+            if (playing && inside) {
+                if (!pl.isPlaying) { pl.seekTo(want); pl.play() }
+                else if (abs(pl.currentPosition - want) > 400) pl.seekTo(want)
+            } else {
+                if (pl.isPlaying) pl.pause()
+                if (abs(pl.currentPosition - want) > 60) pl.seekTo(want)
+            }
+        }
+    }
+
     fun release() {
         player.release()
+        vids.values.forEach { it.release() }
+        vids.clear()
         audio.values.forEach { it.release() }
         audio.clear()
     }

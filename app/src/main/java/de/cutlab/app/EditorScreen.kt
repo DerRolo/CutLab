@@ -5,6 +5,7 @@ import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.awaitEachGesture
@@ -14,7 +15,11 @@ import androidx.compose.foundation.gestures.calculateZoom
 import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.ui.graphics.ColorFilter
 import androidx.compose.ui.graphics.PathEffect
+import androidx.compose.ui.graphics.drawscope.translate
+import androidx.compose.ui.graphics.vector.rememberVectorPainter
+import kotlin.math.hypot
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.positionChanged
 import androidx.compose.ui.platform.LocalViewConfiguration
@@ -40,6 +45,8 @@ import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.layout.layout
+import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlin.math.roundToInt
@@ -59,13 +66,14 @@ fun EditorScreen(vm: EditorViewModel = viewModel()) {
     var addedText by remember { mutableStateOf<Long?>(null) }
 
     val pickVideo = rememberLauncherForActivityResult(ActivityResultContracts.PickMultipleVisualMedia(10)) { vm.addVideos(it) }
+    val pickOverlayVideo = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { it?.let(vm::addOverlayVideo) }
     val pickImage = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { it?.let(vm::addImage) }
     val pickAudio = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { it?.let(vm::addAudio) }
 
     if (vm.showProjects) ProjectsScreen(vm)
     else Column(Modifier.fillMaxSize().background(Color(0xFF101014)).systemBarsPadding()) {
         TopBar(vm) { renaming = true }
-        PreviewArea(vm, Modifier.weight(1f))
+        PreviewArea(vm, Modifier.weight(1f)) { editing = it }
         Transport(vm)
         Box(
             Modifier.fillMaxWidth().height(20.dp).background(Color(0xFF181820))
@@ -74,12 +82,13 @@ fun EditorScreen(vm: EditorViewModel = viewModel()) {
                 },
             contentAlignment = Alignment.Center
         ) { Box(Modifier.width(44.dp).height(4.dp).clip(RoundedCornerShape(2.dp)).background(Color.Gray)) }
-        Timeline(vm, Modifier.fillMaxWidth().height(vm.timelineDp.dp))
+        Timeline(vm, Modifier.fillMaxWidth().height(vm.timelineDp.dp), onEdit = { editing = it })
         SelectionPanel(vm, onEditText = { editing = vm.selection }, onPresets = { showPresets = true })
         Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).background(Color(0xFF181820))) {
             Tool(Icons.Default.Movie, "Video") { pickVideo.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.VideoOnly)) }
             Tool(Icons.Default.ContentCut, "Teilen") { vm.split() }
             Tool(Icons.Default.Title, "Text") { vm.addText()?.let { editing = Selection(Kind.TEXT, it); addedText = it } }
+            Tool(Icons.Default.Layers, "Overlay") { pickOverlayVideo.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.VideoOnly)) }
             Tool(Icons.Default.Image, "Bild") { pickImage.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) }
             Tool(Icons.Default.MusicNote, "Musik") { pickAudio.launch(arrayOf("audio/*")) }
             Tool(Icons.Default.Subtitles, "Untertitel") { showLang = true }
@@ -111,26 +120,53 @@ fun EditorScreen(vm: EditorViewModel = viewModel()) {
         }
     }
 
-    // Sprache waehlen
+    // Untertitel erzeugen
     if (showLang) {
-        var chosen by remember { mutableStateOf(VoskModels.langs.first()) }
+        var eng by remember { mutableStateOf(AsrEngine.WHISPER_SMALL) }
+        var lang by remember { mutableStateOf(AsrLangs.list.first()) }
+        var hint by remember { mutableStateOf("") }
+        var langMenu by remember { mutableStateOf(false) }
         AlertDialog(
             onDismissRequest = { showLang = false },
             title = { Text("Untertitel automatisch erzeugen") },
             text = {
                 Column(Modifier.verticalScroll(rememberScrollState())) {
-                    Text("Sprache im Video:", fontSize = 13.sp)
-                    VoskModels.langs.forEach { l ->
-                        Row(Modifier.fillMaxWidth().clickable { chosen = l }, verticalAlignment = Alignment.CenterVertically) {
-                            RadioButton(selected = chosen == l, onClick = { chosen = l })
-                            Text(l.label)
+                    Text("Genauigkeit", fontSize = 13.sp)
+                    AsrEngine.values().forEach { e ->
+                        Row(Modifier.fillMaxWidth().clickable { eng = e }, verticalAlignment = Alignment.CenterVertically) {
+                            RadioButton(selected = eng == e, onClick = { eng = e })
+                            Column {
+                                Text(e.label)
+                                Text(e.note, fontSize = 11.sp, color = Color.Gray)
+                            }
                         }
                     }
+                    Spacer(Modifier.height(8.dp))
+                    Text("Sprache im Video", fontSize = 13.sp)
+                    Box {
+                        OutlinedButton(onClick = { langMenu = true }) { Text(lang.label) }
+                        DropdownMenu(expanded = langMenu, onDismissRequest = { langMenu = false }) {
+                            AsrLangs.list.forEach { l ->
+                                DropdownMenuItem(text = { Text(l.label) }, onClick = { lang = l; langMenu = false })
+                            }
+                        }
+                    }
+                    Spacer(Modifier.height(8.dp))
+                    Text("Namen / besondere Wörter (optional)", fontSize = 13.sp)
+                    OutlinedTextField(
+                        hint, { hint = it }, singleLine = true,
+                        placeholder = { Text("z. B. Mainz, Wiesbaden, CutLab") },
+                        enabled = eng != AsrEngine.VOSK
+                    )
                     Spacer(Modifier.height(6.dp))
-                    Text("Beim ersten Mal wird das Sprachmodell (ca. 40-50 MB) geladen. Danach laeuft alles offline.", fontSize = 12.sp, color = Color.Gray)
+                    Text(
+                        "Beim ersten Mal wird das Sprachmodell geladen, danach läuft alles offline. " +
+                            "Das Erkennen kann bei langen Videos einige Minuten dauern.",
+                        fontSize = 12.sp, color = Color.Gray
+                    )
                 }
             },
-            confirmButton = { TextButton(onClick = { showLang = false; vm.generateSubtitles(chosen) }) { Text("Starten") } },
+            confirmButton = { TextButton(onClick = { showLang = false; vm.generateSubtitles(eng, lang.code, hint) }) { Text("Starten") } },
             dismissButton = { TextButton(onClick = { showLang = false }) { Text("Abbrechen") } }
         )
     }
@@ -215,8 +251,11 @@ private fun TopBar(vm: EditorViewModel, onRename: () -> Unit) {
 }
 
 @Composable
-private fun PreviewArea(vm: EditorViewModel, modifier: Modifier) {
+private fun PreviewArea(vm: EditorViewModel, modifier: Modifier, onEdit: (Selection) -> Unit) {
     val p = vm.project
+    val onEditNow by rememberUpdatedState(onEdit)
+    val penPainter = rememberVectorPainter(Icons.Default.Edit)
+    val trashPainter = rememberVectorPainter(Icons.Default.Delete)
     Box(modifier.fillMaxWidth().background(Color.Black), contentAlignment = Alignment.Center) {
         if (p.clips.isEmpty()) {
             Text("Tippe unten auf \"Video\", um zu starten", color = Color.Gray, textAlign = TextAlign.Center)
@@ -224,12 +263,35 @@ private fun PreviewArea(vm: EditorViewModel, modifier: Modifier) {
             val touchSlop = LocalViewConfiguration.current.touchSlop
             Box(
                 Modifier.aspectRatio(p.aspect.ratio).clipToBounds()
-                    .pointerInput(Unit) { detectTapGestures { vm.onPreviewTap() } }
+                    .pointerInput(Unit) {
+                        detectTapGestures { off ->
+                            val sel = vm.selection
+                            val r = sel?.let { vm.painter.bounds[it.id] }
+                            if (sel != null && r != null) {
+                                // Tippposition in die (evtl. gezoomte) Vorschau umrechnen
+                                val cx = size.width / 2f
+                                val cy = size.height / 2f
+                                val x = (off.x - cx - vm.pox) / vm.pz + cx
+                                val y = (off.y - cy - vm.poy) / vm.pz + cy
+                                val rad = 14.dp.toPx()
+                                val w = size.width.toFloat()
+                                val h = size.height.toFloat()
+                                val hit = 22.dp.toPx()
+                                val penC = Offset(r.right.coerceIn(rad, w - rad), r.top.coerceIn(rad, h - rad))
+                                val delC = Offset(r.left.coerceIn(rad, w - rad), r.top.coerceIn(rad, h - rad))
+                                if ((sel.kind == Kind.TEXT || sel.kind == Kind.SUB) && hypot(x - penC.x, y - penC.y) <= hit) {
+                                    onEditNow(sel); return@detectTapGestures
+                                }
+                                if (hypot(x - delC.x, y - delC.y) <= hit) { vm.deleteSelected(); return@detectTapGestures }
+                            }
+                            vm.onPreviewTap()
+                        }
+                    }
                     .pointerInput(Unit) {
                         awaitEachGesture {
                             awaitFirstDown(requireUnconsumed = false)
                             val k = vm.selection?.kind
-                            val overlay = k == Kind.TEXT || k == Kind.IMAGE || k == Kind.SUB
+                            val overlay = k == Kind.TEXT || k == Kind.IMAGE || k == Kind.SUB || k == Kind.VIDEO
                             if (overlay) vm.beginTransform()
                             var moved = false
                             var acc = Offset.Zero
@@ -260,10 +322,24 @@ private fun PreviewArea(vm: EditorViewModel, modifier: Modifier) {
                         },
                         modifier = Modifier.fillMaxSize()
                     )
+                    OverlayVideos(vm)
                     Canvas(Modifier.fillMaxSize()) {
                         drawIntoCanvas { vm.painter.draw(it.nativeCanvas, size.width.toInt(), size.height.toInt(), vm.posMs, vm.project) }
                         val r = vm.selection?.let { vm.painter.bounds[it.id] }
                         if (r != null) drawRect(Color.White, Offset(r.left, r.top), Size(r.width(), r.height()), style = Stroke(2.dp.toPx()))
+                        val selNow = vm.selection
+                        if (r != null && selNow != null && !vm.dragging) {
+                            val rad = 14.dp.toPx()
+                            val ic = 18.dp.toPx()
+                            if (selNow.kind == Kind.TEXT || selNow.kind == Kind.SUB) {
+                                val c = Offset(r.right.coerceIn(rad, size.width - rad), r.top.coerceIn(rad, size.height - rad))
+                                drawCircle(Color.White, rad, c)
+                                translate(c.x - ic / 2, c.y - ic / 2) { with(penPainter) { draw(Size(ic, ic), colorFilter = ColorFilter.tint(Color.Black)) } }
+                            }
+                            val d = Offset(r.left.coerceIn(rad, size.width - rad), r.top.coerceIn(rad, size.height - rad))
+                            drawCircle(Color(0xFFFF5252), rad, d)
+                            translate(d.x - ic / 2, d.y - ic / 2) { with(trashPainter) { draw(Size(ic, ic), colorFilter = ColorFilter.tint(Color.White)) } }
+                        }
                         if (vm.dragging) {
                             val dash = PathEffect.dashPathEffect(floatArrayOf(14f, 14f))
                             val faint = Color.White.copy(alpha = 0.3f)
@@ -309,58 +385,92 @@ private fun TimeLabel(vm: EditorViewModel) {
     Text("${fmtTime(vm.posMs)} / ${fmtTime(vm.project.totalMs)}", color = Color.White, fontSize = 13.sp)
 }
 
+private val outlinePalette = listOf(0xFF000000, 0xFFFFFFFF, 0xFF1F2A44, 0x00000000).map { it.toInt() }
+
 @Composable
 private fun SelectionPanel(vm: EditorViewModel, onEditText: () -> Unit, onPresets: () -> Unit) {
+    var subTab by remember { mutableIntStateOf(0) }
     val sel = vm.selection ?: return
     val p = vm.project
     Row(Modifier.fillMaxWidth().background(Color(0xFF20202A)).padding(start = 12.dp, end = 4.dp, top = 4.dp, bottom = 4.dp)) {
-    Column(Modifier.weight(1f)) {
-        when (sel.kind) {
-            Kind.TEXT -> p.texts.find { it.id == sel.id }?.let { t ->
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    TextButton(onClick = onEditText) { Text("Text aendern") }
-                    ColorDots(t.color) { vm.setTextColor(t.id, it) }
+        Column(Modifier.weight(1f)) {
+            when (sel.kind) {
+                Kind.TEXT -> p.texts.find { it.id == sel.id }?.let { t ->
+                    TextButton(onClick = onEditText) { Icon(Icons.Default.Edit, null); Spacer(Modifier.width(6.dp)); Text("Text ändern") }
+                    ColorRow("Schrift", t.color, palette) { vm.setTextColor(t.id, it) }
+                    ColorRow("Kontur", t.outline, outlinePalette) { vm.setTextOutline(t.id, it) }
+                    Slider(t.size, { vm.setTextSize(t.id, it) }, valueRange = 0.02f..0.2f)
                 }
-                Slider(t.size, { vm.setTextSize(t.id, it) }, valueRange = 0.02f..0.2f)
-            }
-            Kind.IMAGE -> p.images.find { it.id == sel.id }?.let { im ->
-                Text("Groesse (oder mit zwei Fingern in der Vorschau)", color = Color.Gray, fontSize = 11.sp)
-                Slider(im.scale, { vm.setImageScale(im.id, it) }, valueRange = 0.05f..1.5f)
-            }
-            Kind.SUB -> {
-                Row(Modifier.horizontalScroll(rememberScrollState()), verticalAlignment = Alignment.CenterVertically) {
-                    SubKind.values().forEach { k ->
-                        FilterChip(selected = p.subStyle.kind == k, onClick = { vm.setSubKind(k) }, label = { Text(k.label, fontSize = 12.sp) }, modifier = Modifier.padding(end = 4.dp))
+                Kind.VIDEO -> p.videos.find { it.id == sel.id }?.let { v ->
+                    Row(Modifier.horizontalScroll(rememberScrollState()), verticalAlignment = Alignment.CenterVertically) {
+                        FilterChip(selected = v.muted, onClick = { vm.setVideoMuted(v.id, !v.muted) }, label = { Text(if (v.muted) "Ton aus" else "Ton an", fontSize = 12.sp) }, modifier = Modifier.padding(end = 4.dp))
+                        listOf(0L to "Ohne Fade", 300L to "Fade 0,3 s", 600L to "Fade 0,6 s", 1000L to "Fade 1 s").forEach { (ms, label) ->
+                            FilterChip(selected = v.fadeMs == ms, onClick = { vm.setVideoFade(v.id, ms) }, label = { Text(label, fontSize = 12.sp) }, modifier = Modifier.padding(end = 4.dp))
+                        }
+                        FilterChip(selected = v.track == 1, onClick = { vm.setVideoTrack(v.id, if (v.track == 0) 1 else 0) }, label = { Text(if (v.track == 0) "Nach oben (Spur 3)" else "Nach unten (Spur 2)", fontSize = 12.sp) })
                     }
-                    TextButton(onClick = onEditText) { Text("Text") }
-                    TextButton(onClick = onPresets) { Text("Vorlagen") }
+                    Text("Größe (oder mit zwei Fingern in der Vorschau)", color = Color.Gray, fontSize = 11.sp)
+                    Slider(v.scale, { vm.setVideoScale(v.id, it) }, valueRange = 0.1f..1.5f)
                 }
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    ColorDots(p.subStyle.color) { vm.setSubColor(it) }
-                    Spacer(Modifier.width(10.dp))
-                    Text("Hervorhebung", color = Color.Gray, fontSize = 11.sp)
-                    ColorDots(p.subStyle.highlight) { vm.setSubHighlight(it) }
+                Kind.IMAGE -> p.images.find { it.id == sel.id }?.let { im ->
+                    Text("Größe (oder mit zwei Fingern in der Vorschau)", color = Color.Gray, fontSize = 11.sp)
+                    Slider(im.scale, { vm.setImageScale(im.id, it) }, valueRange = 0.05f..1.5f)
                 }
-                Slider(p.subStyle.size, { vm.setSubSize(it) }, valueRange = 0.025f..0.15f)
+                Kind.SUB -> {
+                    Row(Modifier.horizontalScroll(rememberScrollState()), verticalAlignment = Alignment.CenterVertically) {
+                        listOf("Stil", "Farbe", "Größe").forEachIndexed { i, label ->
+                            FilterChip(selected = subTab == i, onClick = { subTab = i }, label = { Text(label, fontSize = 12.sp) }, modifier = Modifier.padding(end = 4.dp))
+                        }
+                        FilterChip(
+                            selected = false, onClick = onPresets,
+                            label = { Text("★ Vorlagen", fontSize = 12.sp) },
+                            leadingIcon = null, modifier = Modifier.padding(end = 4.dp)
+                        )
+                    }
+                    when (subTab) {
+                        0 -> Row(Modifier.horizontalScroll(rememberScrollState()), verticalAlignment = Alignment.CenterVertically) {
+                            SubKind.values().forEach { k ->
+                                FilterChip(selected = p.subStyle.kind == k, onClick = { vm.setSubKind(k) }, label = { Text(k.label, fontSize = 12.sp) }, modifier = Modifier.padding(end = 4.dp))
+                            }
+                        }
+                        1 -> Column {
+                            ColorRow("Schrift", p.subStyle.color, palette) { vm.setSubColor(it) }
+                            ColorRow("Aktives Wort", p.subStyle.highlight, palette) { vm.setSubHighlight(it) }
+                            ColorRow("Kontur", p.subStyle.outline, outlinePalette) { vm.setSubOutline(it) }
+                        }
+                        else -> Slider(p.subStyle.size, { vm.setSubSize(it) }, valueRange = 0.025f..0.15f)
+                    }
+                }
+                Kind.CLIP, Kind.AUDIO -> Text(
+                    "Ränder ziehen = kürzen  |  lange drücken und ziehen = verschieben",
+                    color = Color.Gray, fontSize = 11.sp, modifier = Modifier.padding(vertical = 6.dp)
+                )
             }
-            Kind.CLIP, Kind.AUDIO -> Text(
-                "Ränder ziehen = kuerzen  |  lange druecken und ziehen = verschieben",
-                color = Color.Gray, fontSize = 11.sp, modifier = Modifier.padding(vertical = 6.dp)
-            )
         }
-    }
-    IconButton(onClick = { vm.deleteSelected() }) { Icon(Icons.Default.Delete, "Löschen", tint = Color(0xFFFF8A80)) }
+        IconButton(onClick = { vm.deleteSelected() }) { Icon(Icons.Default.Delete, "Löschen", tint = Color(0xFFFF8A80)) }
     }
 }
 
 @Composable
-private fun ColorDots(current: Int, onPick: (Int) -> Unit) {
+private fun ColorRow(label: String, current: Int, colors: List<Int>, onPick: (Int) -> Unit) {
     Row(verticalAlignment = Alignment.CenterVertically) {
-        palette.forEach { c ->
+        Text(label, color = Color.Gray, fontSize = 11.sp, modifier = Modifier.width(78.dp))
+        ColorDots(current, colors, onPick)
+    }
+}
+
+@Composable
+private fun ColorDots(current: Int, colors: List<Int> = palette, onPick: (Int) -> Unit) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        colors.forEach { c ->
+            val none = (c ushr 24) == 0
             Box(
                 Modifier.padding(3.dp).size(if (c == current) 26.dp else 20.dp).clip(CircleShape)
-                    .background(Color(c)).clickable { onPick(c) }
-            )
+                    .background(if (none) Color.Transparent else Color(c))
+                    .border(1.dp, Color.Gray, CircleShape)
+                    .clickable { onPick(c) },
+                contentAlignment = Alignment.Center
+            ) { if (none) Text("✕", fontSize = 10.sp, color = Color.Gray) }
         }
     }
 }
@@ -373,5 +483,30 @@ private fun Tool(icon: ImageVector, label: String, onClick: () -> Unit) {
     ) {
         Icon(icon, label, tint = Color.White)
         Text(label, color = Color.White, fontSize = 11.sp)
+    }
+}
+
+/** Zeigt die Overlay-Videos als echte Player ueber dem Hauptvideo (Position, Groesse, Ueberblenden wie im Export). */
+@Composable
+private fun OverlayVideos(vm: EditorViewModel) {
+    val pos = vm.posMs
+    vm.project.videos.sortedBy { it.track }.filter { pos >= it.startMs && pos < it.startMs + it.durMs }.forEach { v ->
+        key(v.id) {
+            AndroidView(
+                factory = { c ->
+                    (LayoutInflater.from(c).inflate(R.layout.player_overlay, null) as PlayerView).apply { player = vm.engine.videoPlayer(v) }
+                },
+                modifier = Modifier
+                    .layout { m, cons ->
+                        val w = (v.scale * cons.maxWidth).roundToInt().coerceAtLeast(2)
+                        val h = (w / v.aspect).roundToInt().coerceAtLeast(2)
+                        val pl = m.measure(Constraints.fixed(w, h))
+                        layout(cons.maxWidth, cons.maxHeight) {
+                            pl.place((v.x * cons.maxWidth - w / 2f).roundToInt(), (v.y * cons.maxHeight - h / 2f).roundToInt())
+                        }
+                    }
+                    .graphicsLayer { alpha = vm.videoAlpha(v.id) }
+            )
+        }
     }
 }

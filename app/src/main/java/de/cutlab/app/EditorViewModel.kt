@@ -33,7 +33,7 @@ val GUIDES_Y = floatArrayOf(0.1f, 0.382f, 0.5f, 0.618f, 0.9f)
 class EditorViewModel(app: Application) : AndroidViewModel(app) {
     val engine = PreviewEngine(app)
     val images = ImageCache(app)
-    val painter = OverlayPainter { images.get(it) }
+    val painter = OverlayPainter({ images.get(it) })
     val thumbs = ThumbCache(app)
 
     var project by mutableStateOf(Project()); private set
@@ -62,11 +62,14 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
     private val undoStack = ArrayDeque<Project>()
     private var nextId = 1L
     private var lastLive = 0L
-    private var clipAcc = 0f
+    var snapGuideMs by mutableStateOf<Long?>(null); private set     // gelbe Einrast-Linie in der Timeline
+    var dragClipId by mutableStateOf<Long?>(null); private set      // Hauptspur-Clip, der gerade gezogen wird
+    var dragClipMs by mutableFloatStateOf(0f); private set          // Versatz des gezogenen Clips (Vorschau)
+    private var dragRaw = Float.NaN
     private var job: Job? = null
     private var exporter: Exporter? = null
 
-    private data class Meta(val uri: String, val dur: Long, val w: Int, val h: Int)
+    private data class Meta(val uri: String, val dur: Long, val w: Int, val h: Int, val hasAudio: Boolean = true)
 
     init {
         PresetStore.load(app).let { presets = it.first; defaultPreset = it.second }
@@ -88,6 +91,7 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
                 if (isPlaying) posMs = engine.pos(project.clips).coerceAtMost(project.totalMs)
                 else if (engine.player.playbackState == androidx.media3.common.Player.STATE_ENDED) posMs = project.totalMs
                 engine.syncAudio(project.audios, isPlaying, posMs)
+                engine.syncVideos(project.videos, isPlaying, posMs)
             }
         }
     }
@@ -113,7 +117,7 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
     fun togglePlay() = engine.toggle(project.clips, project.totalMs)
     fun onPreviewTap() {
         val k = selection?.kind
-        if (k == Kind.TEXT || k == Kind.IMAGE || k == Kind.SUB) selection = null else togglePlay()
+        if (k == Kind.TEXT || k == Kind.IMAGE || k == Kind.SUB || k == Kind.VIDEO) selection = null else togglePlay()
     }
 
     fun undo() {
@@ -134,7 +138,7 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
             var h = r.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT)?.toIntOrNull() ?: 0
             val rot = r.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_ROTATION)?.toIntOrNull() ?: 0
             if (rot == 90 || rot == 270) { val t = w; w = h; h = t }
-            Meta(u.toString(), d, w, h)
+            Meta(u.toString(), d, w, h, r.extractMetadata(MediaMetadataRetriever.METADATA_KEY_HAS_AUDIO) == "yes")
         } catch (e: Exception) { null } finally { r.release() }
     }
 
@@ -156,12 +160,13 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
         val p = loaded.copy(
             clips = loaded.clips.filter { ok(it.uri) },
             images = loaded.images.filter { ok(it.uri) },
-            audios = loaded.audios.filter { ok(it.uri) }
+            audios = loaded.audios.filter { ok(it.uri) },
+            videos = loaded.videos.filter { ok(it.uri) }
         )
         undoStack.clear(); selection = null; posMs = 0; resetPreviewZoom()
         project = p
         nextId = (p.clips.map { it.id } + p.texts.map { it.id } + p.images.map { it.id } +
-            p.audios.map { it.id } + p.subs.map { it.id }).maxOrNull()?.plus(1) ?: 1L
+            p.audios.map { it.id } + p.videos.map { it.id } + p.subs.map { it.id }).maxOrNull()?.plus(1) ?: 1L
         engine.setClips(p.clips, 0)
     }
 
@@ -300,6 +305,29 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    /** Zusaetzliches Video auf einer Overlay-Spur (Bild-in-Bild / Ueberblenden). */
+    fun addOverlayVideo(uri: Uri) {
+        if (project.clips.isEmpty()) { message = "Zuerst ein Video hinzufuegen."; return }
+        viewModelScope.launch {
+            busy = "Video wird importiert ..."; busyProgress = -1f
+            val meta = try {
+                withContext(Dispatchers.IO) { importFile(uri, "mp4")?.let { probe(Uri.parse(it)) } }
+            } finally { busy = null }
+            if (meta == null || meta.w <= 0 || meta.h <= 0) { message = "Video konnte nicht gelesen werden."; return@launch }
+            val total = project.totalMs
+            val start = posMs.coerceAtMost((total - MIN).coerceAtLeast(0L))
+            val dur = minOf(meta.dur, total - start).coerceAtLeast(MIN)
+            val free0 = project.videos.none { it.track == 0 && it.startMs < start + dur && it.startMs + it.durMs > start }
+            snap()
+            val id = nid()
+            set(project.copy(videos = project.videos + VideoItem(
+                id, meta.uri, meta.dur, meta.w.toFloat() / meta.h, start, 0, dur,
+                track = if (free0) 0 else 1, hasAudio = meta.hasAudio
+            )))
+            selection = Selection(Kind.VIDEO, id)
+        }
+    }
+
     fun setAspect(a: AspectPreset) { snap(); project = project.copy(aspect = a) }
 
     // ---------- Schneiden / Loeschen / Text ----------
@@ -330,6 +358,7 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
             Kind.TEXT -> p.copy(texts = p.texts.filter { it.id != s.id })
             Kind.IMAGE -> p.copy(images = p.images.filter { it.id != s.id })
             Kind.AUDIO -> p.copy(audios = p.audios.filter { it.id != s.id })
+            Kind.VIDEO -> p.copy(videos = p.videos.filter { it.id != s.id })
             Kind.SUB -> p.copy(subs = p.subs.filter { it.id != s.id })
         }
         selection = null
@@ -354,6 +383,7 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
         when (s.kind) {
             Kind.TEXT -> p.texts.find { it.id == s.id }?.let { rawX = it.x; rawY = it.y }
             Kind.IMAGE -> p.images.find { it.id == s.id }?.let { rawX = it.x; rawY = it.y }
+            Kind.VIDEO -> p.videos.find { it.id == s.id }?.let { rawX = it.x; rawY = it.y }
             Kind.SUB -> { rawX = p.subStyle.x; rawY = p.subStyle.y }
             else -> {}
         }
@@ -384,6 +414,9 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
                 Kind.IMAGE -> p.copy(images = p.images.map {
                     if (it.id == s.id) it.copy(x = sx, y = sy, scale = (it.scale * z).coerceIn(0.05f, 1.5f)) else it
                 })
+                Kind.VIDEO -> p.copy(videos = p.videos.map {
+                    if (it.id == s.id) it.copy(x = sx, y = sy, scale = (it.scale * z).coerceIn(0.1f, 1.5f)) else it
+                })
                 Kind.SUB -> p.copy(subStyle = p.subStyle.copy(x = sx, y = sy, size = (p.subStyle.size * z).coerceIn(0.025f, 0.15f)))
                 else -> p
             }
@@ -402,34 +435,145 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
 
     fun setTextSize(id: Long, v: Float) = live { p -> p.copy(texts = p.texts.map { if (it.id == id) it.copy(size = v) else it }) }
     fun setTextColor(id: Long, c: Int) = live { p -> p.copy(texts = p.texts.map { if (it.id == id) it.copy(color = c) else it }) }
+    fun setVideoScale(id: Long, v: Float) = live { p -> p.copy(videos = p.videos.map { if (it.id == id) it.copy(scale = v) else it }) }
+    fun setVideoMuted(id: Long, m: Boolean) { snap(); project = project.copy(videos = project.videos.map { if (it.id == id) it.copy(muted = m) else it }) }
+    fun setVideoFade(id: Long, ms: Long) { snap(); project = project.copy(videos = project.videos.map { if (it.id == id) it.copy(fadeMs = ms) else it }) }
+    fun setVideoTrack(id: Long, t: Int) { snap(); project = project.copy(videos = project.videos.map { if (it.id == id) it.copy(track = t) else it }) }
+    /** Deckkraft eines Overlay-Videos zum aktuellen Zeitpunkt (Ein-/Ausblenden). */
+    fun videoAlpha(id: Long): Float {
+        val v = project.videos.find { it.id == id } ?: return 1f
+        return painter.videoAlpha(v, posMs)
+    }
     fun setImageScale(id: Long, v: Float) = live { p -> p.copy(images = p.images.map { if (it.id == id) it.copy(scale = v) else it }) }
     fun setSubKind(k: SubKind) { snap(); project = project.copy(subStyle = project.subStyle.copy(kind = k)) }
     fun setSubSize(v: Float) = live { p -> p.copy(subStyle = p.subStyle.copy(size = v)) }
+    fun setTextOutline(id: Long, c: Int) = live { p -> p.copy(texts = p.texts.map { if (it.id == id) it.copy(outline = c) else it }) }
+    fun setSubOutline(c: Int) = live { p -> p.copy(subStyle = p.subStyle.copy(outline = c)) }
     fun setSubColor(c: Int) = live { p -> p.copy(subStyle = p.subStyle.copy(color = c)) }
     fun setSubHighlight(c: Int) = live { p -> p.copy(subStyle = p.subStyle.copy(highlight = c)) }
 
     // ---------- Timeline-Drags ----------
-    fun beginDrag() { snap(); clipAcc = 0f }
-    fun endDrag() { engine.setClips(project.clips, posMs); posMs = posMs.coerceAtMost(project.totalMs) }
+    fun beginDrag() { snap(); dragRaw = Float.NaN; dragClipId = null; dragClipMs = 0f; snapGuideMs = null }
+
+    fun endDrag() {
+        snapGuideMs = null; dragRaw = Float.NaN
+        val cid = dragClipId
+        if (cid != null) {
+            // Clip dort einsetzen, wo seine Mitte nach dem Loslassen liegt
+            val l = project.clips.toMutableList()
+            val i = l.indexOfFirst { it.id == cid }
+            if (i >= 0) {
+                var start = 0L
+                for (k in 0 until i) start += l[k].durMs
+                val center = start + l[i].durMs / 2f + dragClipMs
+                val moved = l.removeAt(i)
+                var ni = 0
+                var acc = 0L
+                for (c in l) { if (center > acc + c.durMs / 2f) ni++; acc += c.durMs }
+                l.add(ni, moved)
+                project = project.copy(clips = l)
+            }
+            dragClipId = null; dragClipMs = 0f
+        }
+        engine.setClips(project.clips, posMs)
+        posMs = posMs.coerceAtMost(project.totalMs)
+    }
+
+    // ---------- Einrasten (Docking) ----------
+    private fun startOf(k: Kind, id: Long): Long? = when (k) {
+        Kind.TEXT -> project.texts.find { it.id == id }?.startMs
+        Kind.IMAGE -> project.images.find { it.id == id }?.startMs
+        Kind.AUDIO -> project.audios.find { it.id == id }?.startMs
+        Kind.VIDEO -> project.videos.find { it.id == id }?.startMs
+        Kind.SUB -> project.subs.find { it.id == id }?.startMs
+        Kind.CLIP -> null
+    }
+
+    private fun durOf(k: Kind, id: Long): Long? = when (k) {
+        Kind.TEXT -> project.texts.find { it.id == id }?.durMs
+        Kind.IMAGE -> project.images.find { it.id == id }?.durMs
+        Kind.AUDIO -> project.audios.find { it.id == id }?.durMs
+        Kind.VIDEO -> project.videos.find { it.id == id }?.durMs
+        Kind.SUB -> project.subs.find { it.id == id }?.let { it.endMs - it.startMs }
+        Kind.CLIP -> null
+    }
+
+    /** Punkte, an denen Elemente einrasten: Anfang, Ende, Playhead, Clip-Grenzen und Kanten der Nachbarn. */
+    private fun snapPoints(k: Kind, id: Long): List<Long> {
+        val p = project
+        val pts = ArrayList<Long>()
+        pts.add(0L); pts.add(posMs); pts.add(p.totalMs)
+        var acc = 0L
+        p.clips.forEach { acc += it.durMs; pts.add(acc) }
+        when (k) {
+            Kind.TEXT -> p.texts.filter { it.id != id }.forEach { pts.add(it.startMs); pts.add(it.startMs + it.durMs) }
+            Kind.IMAGE -> p.images.filter { it.id != id }.forEach { pts.add(it.startMs); pts.add(it.startMs + it.durMs) }
+            Kind.AUDIO -> p.audios.filter { it.id != id }.forEach { pts.add(it.startMs); pts.add(it.startMs + it.durMs) }
+            Kind.VIDEO -> p.videos.filter { it.id != id }.forEach { pts.add(it.startMs); pts.add(it.startMs + it.durMs) }
+            Kind.SUB -> p.subs.filter { it.id != id }.forEach { pts.add(it.startMs); pts.add(it.endMs) }
+            Kind.CLIP -> {}
+        }
+        return pts
+    }
+
+    private fun snapThreshold(): Long = (14f * 1000f / zoom).toLong()      // ca. 14 dp auf dem Bildschirm
+
+    private fun snapSpan(start: Long, dur: Long, pts: List<Long>): Long {
+        var best = start; var bd = Long.MAX_VALUE; var guide: Long? = null
+        for (pt in pts) {
+            val d1 = abs(start - pt); if (d1 < bd) { bd = d1; best = pt; guide = pt }
+            val d2 = abs(start + dur - pt); if (d2 < bd) { bd = d2; best = pt - dur; guide = pt }
+        }
+        return if (bd <= snapThreshold()) { snapGuideMs = guide; best } else { snapGuideMs = null; start }
+    }
+
+    private fun snapEdge(edge: Long, pts: List<Long>): Long {
+        var best = edge; var bd = Long.MAX_VALUE
+        for (pt in pts) { val d = abs(edge - pt); if (d < bd) { bd = d; best = pt } }
+        return if (bd <= snapThreshold()) { snapGuideMs = best; best } else { snapGuideMs = null; edge }
+    }
 
     fun moveItem(k: Kind, id: Long, d: Float) {
+        if (k == Kind.CLIP) { dragClipId = id; dragClipMs += d; return }
+        val cur = startOf(k, id) ?: return
+        val dur = durOf(k, id) ?: return
+        val total = project.totalMs
+        if (dragRaw.isNaN()) dragRaw = cur.toFloat()
+        dragRaw += d
+        val raw = dragRaw.toLong().coerceIn(0L, maxOf(0L, total - dur))
+        val ns = snapSpan(raw, dur, snapPoints(k, id)).coerceIn(0L, maxOf(0L, total - dur))
+        moveByDelta(k, id, (ns - cur).toFloat())
+    }
+
+    fun trimStart(k: Kind, id: Long, d: Float) {
+        val cur = startOf(k, id)
+        if (k == Kind.CLIP || cur == null) { trimStartRaw(k, id, d); return }
+        if (dragRaw.isNaN()) dragRaw = cur.toFloat()
+        dragRaw += d
+        val edge = snapEdge(dragRaw.toLong(), snapPoints(k, id))
+        trimStartRaw(k, id, (edge - cur).toFloat())
+    }
+
+    fun trimEnd(k: Kind, id: Long, d: Float) {
+        val cur = startOf(k, id)
+        val dur = durOf(k, id)
+        if (k == Kind.CLIP || cur == null || dur == null) { trimEndRaw(k, id, d); return }
+        if (dragRaw.isNaN()) dragRaw = (cur + dur).toFloat()
+        dragRaw += d
+        val edge = snapEdge(dragRaw.toLong(), snapPoints(k, id))
+        trimEndRaw(k, id, (edge - (cur + dur)).toFloat())
+    }
+
+    private fun moveByDelta(k: Kind, id: Long, d: Float) {
         val p = project
         val total = p.totalMs
         fun cs(s: Long, dur: Long) = (s + d.toLong()).coerceIn(0L, maxOf(0L, total - dur))
         project = when (k) {
-            Kind.CLIP -> {
-                clipAcc += d
-                val l = p.clips.toMutableList()
-                val i = l.indexOfFirst { it.id == id }
-                if (i < 0) p else {
-                    if (clipAcc > 0 && i < l.lastIndex && clipAcc > l[i + 1].durMs / 2f) { clipAcc -= l[i + 1].durMs; Collections.swap(l, i, i + 1) }
-                    else if (clipAcc < 0 && i > 0 && -clipAcc > l[i - 1].durMs / 2f) { clipAcc += l[i - 1].durMs; Collections.swap(l, i, i - 1) }
-                    p.copy(clips = l)
-                }
-            }
+            Kind.CLIP -> p
             Kind.TEXT -> p.copy(texts = p.texts.map { if (it.id == id) it.copy(startMs = cs(it.startMs, it.durMs)) else it })
             Kind.IMAGE -> p.copy(images = p.images.map { if (it.id == id) it.copy(startMs = cs(it.startMs, it.durMs)) else it })
             Kind.AUDIO -> p.copy(audios = p.audios.map { if (it.id == id) it.copy(startMs = cs(it.startMs, it.durMs)) else it })
+            Kind.VIDEO -> p.copy(videos = p.videos.map { if (it.id == id) it.copy(startMs = cs(it.startMs, it.durMs)) else it })
             Kind.SUB -> p.copy(subs = p.subs.map {
                 if (it.id == id) {
                     val dur = it.endMs - it.startMs
@@ -441,7 +585,7 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    fun trimStart(k: Kind, id: Long, d: Float) {
+    private fun trimStartRaw(k: Kind, id: Long, d: Float) {
         val p = project
         val dl = d.toLong()
         project = when (k) {
@@ -453,6 +597,13 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
             })
             Kind.IMAGE -> p.copy(images = p.images.map {
                 if (it.id == id) { val end = it.startMs + it.durMs; val ns = (it.startMs + dl).coerceIn(0L, end - MIN); it.copy(startMs = ns, durMs = end - ns) } else it
+            })
+            Kind.VIDEO -> p.copy(videos = p.videos.map {
+                if (it.id == id) {
+                    val end = it.startMs + it.durMs
+                    val ns = maxOf((it.startMs + dl).coerceIn(0L, end - MIN), it.startMs - it.inMs)
+                    it.copy(startMs = ns, inMs = it.inMs + (ns - it.startMs), durMs = end - ns)
+                } else it
             })
             Kind.AUDIO -> p.copy(audios = p.audios.map {
                 if (it.id == id) {
@@ -470,7 +621,7 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    fun trimEnd(k: Kind, id: Long, d: Float) {
+    private fun trimEndRaw(k: Kind, id: Long, d: Float) {
         val p = project
         val dl = d.toLong()
         val total = p.totalMs
@@ -483,6 +634,13 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
             })
             Kind.IMAGE -> p.copy(images = p.images.map {
                 if (it.id == id) { val ne = (it.startMs + it.durMs + dl).coerceIn(it.startMs + MIN, maxOf(it.startMs + MIN, total)); it.copy(durMs = ne - it.startMs) } else it
+            })
+            Kind.VIDEO -> p.copy(videos = p.videos.map {
+                if (it.id == id) {
+                    val hi = minOf(it.startMs + (it.srcDurMs - it.inMs), maxOf(total, it.startMs + MIN))
+                    val ne = (it.startMs + it.durMs + dl).coerceIn(it.startMs + MIN, maxOf(it.startMs + MIN, hi))
+                    it.copy(durMs = ne - it.startMs)
+                } else it
             })
             Kind.AUDIO -> p.copy(audios = p.audios.map {
                 if (it.id == id) {
@@ -501,15 +659,15 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     // ---------- Untertitel ----------
-    fun generateSubtitles(lang: VoskLang) {
+    fun generateSubtitles(engine: AsrEngine, lang: String, hint: String) {
         val clips = project.clips
         if (clips.isEmpty()) { message = "Zuerst ein Video hinzufuegen."; return }
-        engine.player.pause()
-        busy = "Untertitel (${lang.label})"; busyProgress = -1f
+        this.engine.player.pause()
+        busy = "Untertitel werden erzeugt ..."; busyProgress = -1f
         job = viewModelScope.launch {
             try {
                 val subs = withContext(Dispatchers.Default) {
-                    SubtitleGenerator.generate(getApplication(), clips, lang) { stage, pr -> busy = stage; busyProgress = pr }
+                    SubtitleGenerator.generate(getApplication(), clips, engine, lang, hint) { stage, pr -> busy = stage; busyProgress = pr }
                 }
                 if (subs.isEmpty()) message = "Keine Sprache erkannt."
                 else {
@@ -520,7 +678,7 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
                 }
             } catch (e: kotlinx.coroutines.CancellationException) {
                 throw e
-            } catch (e: Exception) {
+            } catch (e: Throwable) {
                 message = "Untertitel fehlgeschlagen: ${e.message}"
             } finally { busy = null }
         }
@@ -546,6 +704,7 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun cancelBusy() {
+        try { WhisperLib.abort() } catch (_: Throwable) {}
         exporter?.cancel(); exporter = null
         job?.cancel()
         busy = null
