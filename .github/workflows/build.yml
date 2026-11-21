@@ -16,6 +16,9 @@ jobs:
         with:
           distribution: temurin
           java-version: 17
+      - name: whisper.cpp holen (genaue Spracherkennung)
+        continue-on-error: true
+        run: git clone --depth 1 --branch v1.7.2 https://github.com/ggerganov/whisper.cpp.git app/src/main/cpp/whisper.cpp
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: 8.10.2
