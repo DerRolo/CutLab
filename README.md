@@ -1,26 +1,59 @@
-# CutLab – einfacher Video-Editor für Android
+# CutLab
 
-Mehrspur-Timeline, Text-/Bild-/Musikspuren, automatische Untertitel (mehrere Sprachen, 3 Stile), Export als MP4.
+Ein einfacher Video-Editor für Android, den man selbst bauen kann. Gedacht für Kurzvideos: schneiden, Text, Bilder, Musik und automatische Untertitel. Ohne Abo und ohne Schnickschnack.
 
-## Starten
-1. Neues GitHub-Repo anlegen, diesen Ordnerinhalt hochladen (`git push` auf `main`).
-2. Unter **Actions → Build APK** läuft der Build automatisch. Danach das Artefakt `cutlab-debug-apk` herunterladen und die APK aufs Handy installieren.
-3. Alternativ: Ordner in **Android Studio** öffnen und auf dem Handy starten (zum Debuggen empfohlen).
+## Installieren
 
-## Bedienung
-- **Projekte**: Ordner-Symbol oben links öffnet die Projektliste (neu, öffnen, umbenennen, löschen). Auf den Projektnamen tippen = umbenennen. Alles wird automatisch gespeichert.
-- **Vorschaubilder**: Videoclips zeigen in der Timeline Standbilder (1 pro Sekunde Quellvideo, werden im Hintergrund geladen).
-- **Timeline**: wischen = Playhead bewegen (Mitte). Element antippen = auswählen, weiße Ränder ziehen = kürzen, lange drücken + ziehen = verschieben (Videoclips: Reihenfolge ändern).
-- **Teilen**: Playhead an die Stelle, dann „Teilen“.
-- **Text/Bild**: in der Vorschau mit einem Finger verschieben, mit zwei Fingern skalieren.
-- **Untertitel**: Sprache wählen → Modell wird einmalig geladen → Wörter werden mit Zeitstempeln erkannt. Stil, Größe, Position und Farbe gelten für alle Untertitel. Stile: Klassisch, Karaoke (aktuelles Wort farbig), Pop-up (aktuelles Wort poppt auf).
+1. Auf GitHub im Reiter **Releases** die neueste `CutLab-build-….apk` herunterladen.
+2. Auf dem Handy antippen und die Installation erlauben.
+3. Wer ein Update installieren will, muss die alte Version vorher deinstallieren (dabei gehen die Projekte in der App verloren, exportierte Videos nicht).
 
-## Technik
-Kotlin + Jetpack Compose · Media3 ExoPlayer (Vorschau) · Media3 Transformer (Export) · Vosk (Offline-Spracherkennung).
-`OverlayPainter` zeichnet Text/Bilder/Untertitel – derselbe Code für Vorschau und Export.
+Bei jedem Upload auf GitHub baut sich die App automatisch neu und erscheint als neues Release.
 
-## Bekannte Grenzen / nächste Schritte
-- Projekt wird automatisch gespeichert; importierte Dateien werden in den App-Speicher kopiert (über „+“ oben wird alles gelöscht und neu begonnen).
-- Keine Wellenformen für Musik, keine Übergänge/Filter.
-- Sprachmodelle: Namen/Versionen in `SubtitleGenerator.kt` (`VoskModels`), Liste auf https://alphacephei.com/vosk/models
-- Falls `addGap` im Exporter nicht kompiliert: Media3-Version in `app/build.gradle.kts` anpassen.
+## Was die App kann
+
+**Schneiden**
+- Mehrere Videos hintereinander legen und die Reihenfolge ändern
+- Am Playhead teilen, Anfang und Ende per Ziehen kürzen
+- Standbilder auf den Clips zeigen, was wo passiert
+
+**Spuren**
+- Text, Bilder und Musik als eigene Spuren unter dem Video
+- Zeitlich verschieben und in der Länge ziehen
+- Text und Bilder direkt in der Vorschau verschieben und mit zwei Fingern skalieren
+- Hilfslinien (Mitte, Ränder, goldener Schnitt): Elemente rasten sanft ein, lassen sich aber trotzdem weiterziehen
+
+**Untertitel automatisch**
+- Sprache wählen, die App erkennt das Gesagte (10 Sprachen, läuft offline)
+- Beim ersten Mal wird ein kleines Sprachmodell geladen (ca. 40–50 MB)
+- Drei Stile: Klassisch, Karaoke (aktuelles Wort farbig) und Pop-up (aktuelles Wort poppt auf)
+- Größe, Position und Farbe gelten für alle Untertitel auf einmal
+- Zu lange Wörter werden getrennt, der Text bleibt immer im Bild
+- Eigene **Vorlagen** speichern (mit Namen) und eine als Standard für neue Projekte festlegen
+
+**Projekte**
+- Alles wird automatisch gespeichert
+- Projektliste über das Ordner-Symbol oben links: neu, öffnen, umbenennen, löschen
+
+**Vorschau und Export**
+- Die Vorschau zeigt alles so, wie es später aussieht, und lässt sich mit zwei Fingern heranzoomen
+- „Rückgängig" für die letzten Schritte
+- Export als MP4 in 9:16 (hochkant), 16:9 oder 1:1, gespeichert unter Filme/CutLab
+
+## Kurz bedienen
+
+- **Timeline:** wischen bewegt den Playhead (die weiße Linie in der Mitte)
+- **Antippen:** Element auswählen, unten erscheinen dann Einstellungen und der Mülleimer
+- **Weiße Ränder ziehen:** kürzen
+- **Lange drücken und ziehen:** verschieben
+- **Untermenü unten:** Video, Teilen, Text, Bild, Musik, Untertitel
+
+## Was noch fehlt
+
+- Lautstärke pro Clip oder Musikspur
+- Wellenform bei der Musik
+- Übergänge und Filter
+
+## Für Entwickler
+
+Kotlin und Jetpack Compose. Vorschau mit Media3 ExoPlayer, Export mit Media3 Transformer, Spracherkennung mit Vosk. Text, Bilder und Untertitel werden von demselben Code gezeichnet, in der Vorschau wie im Export. Mit Android Studio lässt sich der Ordner direkt öffnen.

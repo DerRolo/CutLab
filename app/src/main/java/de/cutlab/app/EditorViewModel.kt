@@ -45,6 +45,8 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
     var busyProgress by mutableFloatStateOf(-1f); private set
     var message by mutableStateOf<String?>(null)
     var showProjects by mutableStateOf(false)
+    var presets by mutableStateOf<List<SubPreset>>(emptyList()); private set
+    var defaultPreset by mutableStateOf<String?>(null); private set
     var snapX by mutableStateOf<Float?>(null); private set
     var snapY by mutableStateOf<Float?>(null); private set
     var dragging by mutableStateOf(false); private set
@@ -66,7 +68,8 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
     private data class Meta(val uri: String, val dur: Long, val w: Int, val h: Int)
 
     init {
-        val id = ProjectStore.lastId(app) ?: ProjectStore.newId().also { ProjectStore.save(app, it, Project()) }
+        PresetStore.load(app).let { presets = it.first; defaultPreset = it.second }
+        val id = ProjectStore.lastId(app) ?: ProjectStore.newId().also { ProjectStore.save(app, it, newProjectData()) }
         currentId = id
         ProjectStore.setLast(app, id)
         applyLoaded(ProjectStore.load(app, id) ?: Project())
@@ -161,6 +164,30 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
         engine.setClips(p.clips, 0)
     }
 
+    /** Neues Projekt startet mit der Standard-Untertitelvorlage (falls gesetzt). */
+    private fun newProjectData() = Project(subStyle = presets.find { it.name == defaultPreset }?.style ?: SubStyle())
+
+    // ---------- Untertitel-Vorlagen ----------
+    private fun persistPresets() { try { PresetStore.save(getApplication(), presets, defaultPreset) } catch (_: Exception) {} }
+
+    fun savePreset(name: String) {
+        presets = presets.filter { it.name != name } + SubPreset(name, project.subStyle)
+        persistPresets()
+    }
+
+    fun applyPreset(p: SubPreset) { snap(); project = project.copy(subStyle = p.style) }
+
+    fun deletePreset(name: String) {
+        presets = presets.filter { it.name != name }
+        if (defaultPreset == name) defaultPreset = null
+        persistPresets()
+    }
+
+    fun toggleDefaultPreset(name: String) {
+        defaultPreset = if (defaultPreset == name) null else name
+        persistPresets()
+    }
+
     private fun saveNow() { try { ProjectStore.save(getApplication(), currentId, project) } catch (_: Exception) {} }
 
     private fun switchTo(id: String) {
@@ -185,7 +212,7 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
     fun createProject() {
         saveNow()
         val id = ProjectStore.newId()
-        ProjectStore.save(getApplication(), id, Project())
+        ProjectStore.save(getApplication(), id, newProjectData())
         switchTo(id)
     }
 
@@ -194,7 +221,7 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
         if (id == currentId) {
             val other = ProjectStore.list(getApplication()).firstOrNull()?.id
             if (other != null) switchTo(other).also { showProjects = true }
-            else { val nid = ProjectStore.newId(); ProjectStore.save(getApplication(), nid, Project()); switchTo(nid); showProjects = true }
+            else { val nid = ProjectStore.newId(); ProjectStore.save(getApplication(), nid, newProjectData()); switchTo(nid); showProjects = true }
         }
         refreshList()
     }

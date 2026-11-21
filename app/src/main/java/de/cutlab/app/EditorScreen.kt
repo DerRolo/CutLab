@@ -41,6 +41,7 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import kotlin.math.roundToInt
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.media3.ui.AspectRatioFrameLayout
@@ -53,6 +54,7 @@ fun EditorScreen(vm: EditorViewModel = viewModel()) {
     var editing by remember { mutableStateOf<Selection?>(null) }
     var showLang by remember { mutableStateOf(false) }
     var renaming by remember { mutableStateOf(false) }
+    var showPresets by remember { mutableStateOf(false) }
     var addedText by remember { mutableStateOf<Long?>(null) }
 
     val pickVideo = rememberLauncherForActivityResult(ActivityResultContracts.PickMultipleVisualMedia(10)) { vm.addVideos(it) }
@@ -65,7 +67,7 @@ fun EditorScreen(vm: EditorViewModel = viewModel()) {
         PreviewArea(vm, Modifier.weight(1f))
         Transport(vm)
         Timeline(vm, Modifier.fillMaxWidth().height(215.dp))
-        SelectionPanel(vm) { editing = vm.selection }
+        SelectionPanel(vm, onEditText = { editing = vm.selection }, onPresets = { showPresets = true })
         Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).background(Color(0xFF181820))) {
             Tool(Icons.Default.Movie, "Video") { pickVideo.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.VideoOnly)) }
             Tool(Icons.Default.ContentCut, "Teilen") { vm.split() }
@@ -135,6 +137,42 @@ fun EditorScreen(vm: EditorViewModel = viewModel()) {
                 else LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
             },
             confirmButton = { TextButton(onClick = { vm.cancelBusy() }) { Text("Abbrechen") } }
+        )
+    }
+
+    if (showPresets) {
+        var pname by remember { mutableStateOf("") }
+        AlertDialog(
+            onDismissRequest = { showPresets = false },
+            title = { Text("Untertitel-Vorlagen") },
+            text = {
+                Column(Modifier.verticalScroll(rememberScrollState())) {
+                    Text("Aktuellen Stil speichern (Art, Größe, Position, Farben):", fontSize = 12.sp)
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        OutlinedTextField(pname, { pname = it }, singleLine = true, placeholder = { Text("Name") }, modifier = Modifier.weight(1f))
+                        TextButton(enabled = pname.isNotBlank(), onClick = { vm.savePreset(pname.trim()); pname = "" }) { Text("Speichern") }
+                    }
+                    Spacer(Modifier.height(8.dp))
+                    if (vm.presets.isEmpty()) Text("Noch keine Vorlagen gespeichert.", fontSize = 12.sp, color = Color.Gray)
+                    else Text("Antippen = anwenden.  Stern = Standard für neue Projekte.", fontSize = 11.sp, color = Color.Gray)
+                    vm.presets.forEach { pr ->
+                        Row(Modifier.fillMaxWidth().clickable { vm.applyPreset(pr); showPresets = false }, verticalAlignment = Alignment.CenterVertically) {
+                            Column(Modifier.weight(1f).padding(vertical = 6.dp)) {
+                                Text(pr.name)
+                                Text(
+                                    "${pr.style.kind.label} · Größe ${(pr.style.size * 100).roundToInt()} · Höhe ${(pr.style.y * 100).roundToInt()} %",
+                                    fontSize = 11.sp, color = Color.Gray
+                                )
+                            }
+                            IconButton(onClick = { vm.toggleDefaultPreset(pr.name) }) {
+                                Icon(if (vm.defaultPreset == pr.name) Icons.Default.Star else Icons.Default.StarBorder, "Standard", tint = Color(0xFFFFD400))
+                            }
+                            IconButton(onClick = { vm.deletePreset(pr.name) }) { Icon(Icons.Default.Delete, "Löschen") }
+                        }
+                    }
+                }
+            },
+            confirmButton = { TextButton(onClick = { showPresets = false }) { Text("Schließen") } }
         )
     }
 
@@ -264,7 +302,7 @@ private fun TimeLabel(vm: EditorViewModel) {
 }
 
 @Composable
-private fun SelectionPanel(vm: EditorViewModel, onEditText: () -> Unit) {
+private fun SelectionPanel(vm: EditorViewModel, onEditText: () -> Unit, onPresets: () -> Unit) {
     val sel = vm.selection ?: return
     val p = vm.project
     Row(Modifier.fillMaxWidth().background(Color(0xFF20202A)).padding(start = 12.dp, end = 4.dp, top = 4.dp, bottom = 4.dp)) {
@@ -282,11 +320,12 @@ private fun SelectionPanel(vm: EditorViewModel, onEditText: () -> Unit) {
                 Slider(im.scale, { vm.setImageScale(im.id, it) }, valueRange = 0.05f..1.5f)
             }
             Kind.SUB -> {
-                Row(verticalAlignment = Alignment.CenterVertically) {
+                Row(Modifier.horizontalScroll(rememberScrollState()), verticalAlignment = Alignment.CenterVertically) {
                     SubKind.values().forEach { k ->
                         FilterChip(selected = p.subStyle.kind == k, onClick = { vm.setSubKind(k) }, label = { Text(k.label, fontSize = 12.sp) }, modifier = Modifier.padding(end = 4.dp))
                     }
                     TextButton(onClick = onEditText) { Text("Text") }
+                    TextButton(onClick = onPresets) { Text("Vorlagen") }
                 }
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     ColorDots(p.subStyle.color) { vm.setSubColor(it) }
