@@ -39,7 +39,8 @@ data class SubStyle(
     val size: Float = 0.05f,
     val y: Float = 0.78f,
     val color: Int = Color.WHITE,
-    val highlight: Int = 0xFFFFD400.toInt()
+    val highlight: Int = 0xFFFFD400.toInt(),
+    val x: Float = 0.5f
 )
 
 enum class AspectPreset(val label: String, val w: Int, val h: Int) {

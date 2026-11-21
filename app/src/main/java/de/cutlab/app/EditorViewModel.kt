@@ -45,6 +45,7 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
     var busyProgress by mutableFloatStateOf(-1f); private set
     var message by mutableStateOf<String?>(null)
     var showProjects by mutableStateOf(false)
+    var timelineDp by mutableFloatStateOf(150f)          // Hoehe der Timeline, per Griff verstellbar
     var presets by mutableStateOf<List<SubPreset>>(emptyList()); private set
     var defaultPreset by mutableStateOf<String?>(null); private set
     var snapX by mutableStateOf<Float?>(null); private set
@@ -353,7 +354,7 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
         when (s.kind) {
             Kind.TEXT -> p.texts.find { it.id == s.id }?.let { rawX = it.x; rawY = it.y }
             Kind.IMAGE -> p.images.find { it.id == s.id }?.let { rawX = it.x; rawY = it.y }
-            Kind.SUB -> { rawX = 0.5f; rawY = p.subStyle.y }
+            Kind.SUB -> { rawX = p.subStyle.x; rawY = p.subStyle.y }
             else -> {}
         }
         dragging = true
@@ -373,7 +374,7 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
         rawY = (rawY + dy).coerceIn(0f, 1f)
         val (sx, gx) = snapTo(rawX, GUIDES_X)
         val (sy, gy) = snapTo(rawY, GUIDES_Y)
-        snapX = if (s.kind == Kind.SUB) null else gx
+        snapX = gx
         snapY = gy
         live { p ->
             when (s.kind) {
@@ -383,7 +384,7 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
                 Kind.IMAGE -> p.copy(images = p.images.map {
                     if (it.id == s.id) it.copy(x = sx, y = sy, scale = (it.scale * z).coerceIn(0.05f, 1.5f)) else it
                 })
-                Kind.SUB -> p.copy(subStyle = p.subStyle.copy(y = sy, size = (p.subStyle.size * z).coerceIn(0.025f, 0.15f)))
+                Kind.SUB -> p.copy(subStyle = p.subStyle.copy(x = sx, y = sy, size = (p.subStyle.size * z).coerceIn(0.025f, 0.15f)))
                 else -> p
             }
         }

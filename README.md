@@ -16,6 +16,7 @@ Bei jedem Upload auf GitHub baut sich die App automatisch neu und erscheint als 
 - Mehrere Videos hintereinander legen und die Reihenfolge ändern
 - Am Playhead teilen, Anfang und Ende per Ziehen kürzen
 - Standbilder auf den Clips zeigen, was wo passiert
+- Timeline mit zwei Fingern rein- und rauszoomen (oder mit der Lupe); den Griff über der Timeline nach oben/unten ziehen, um sie größer oder kleiner zu machen
 
 **Spuren**
 - Text, Bilder und Musik als eigene Spuren unter dem Video
@@ -27,7 +28,7 @@ Bei jedem Upload auf GitHub baut sich die App automatisch neu und erscheint als 
 - Sprache wählen, die App erkennt das Gesagte (10 Sprachen, läuft offline)
 - Beim ersten Mal wird ein kleines Sprachmodell geladen (ca. 40–50 MB)
 - Drei Stile: Klassisch, Karaoke (aktuelles Wort farbig) und Pop-up (aktuelles Wort poppt auf)
-- Größe, Position und Farbe gelten für alle Untertitel auf einmal
+- Größe, Position (auch links/rechts, mit Einrasten in der Mitte) und Farbe gelten für alle Untertitel auf einmal
 - Zu lange Wörter werden getrennt, der Text bleibt immer im Bild
 - Eigene **Vorlagen** speichern (mit Namen) und eine als Standard für neue Projekte festlegen
 

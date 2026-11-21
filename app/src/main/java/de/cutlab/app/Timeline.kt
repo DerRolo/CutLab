@@ -3,12 +3,17 @@ package de.cutlab.app
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.calculateZoom
 import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.ScrollState
 import androidx.compose.material3.Text
@@ -56,12 +61,29 @@ fun Timeline(vm: EditorViewModel, modifier: Modifier = Modifier) {
     val imageItems = remember(p.images) { p.images.map { TItem(it.id, Kind.IMAGE, it.startMs, it.durMs, "Bild") } }
     val audioItems = remember(p.audios) { p.audios.map { TItem(it.id, Kind.AUDIO, it.startMs, it.durMs, it.name) } }
 
-    BoxWithConstraints(modifier.background(Color(0xFF181820))) {
+    BoxWithConstraints(
+        modifier.background(Color(0xFF181820)).pointerInput(Unit) {
+            // Zwei Finger = Zoom der Timeline (Playhead bleibt in der Mitte)
+            awaitEachGesture {
+                awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
+                do {
+                    val ev = awaitPointerEvent(PointerEventPass.Initial)
+                    if (ev.changes.count { it.pressed } >= 2) {
+                        val z = ev.calculateZoom()
+                        if (z != 1f) {
+                            vm.zoom = (vm.zoom * z).coerceIn(15f, 400f)
+                            ev.changes.forEach { it.consume() }
+                        }
+                    }
+                } while (ev.changes.any { it.pressed })
+            }
+        }
+    ) {
         val half = maxWidth / 2
         val contentW = half * 2 + (p.totalMs * dpPerMs).dp
         val viewPx = with(density) { (half * 2).toPx() }
         Column(
-            Modifier.horizontalScroll(scroll).width(contentW).padding(top = 2.dp),
+            Modifier.verticalScroll(rememberScrollState()).horizontalScroll(scroll).width(contentW).padding(top = 2.dp),
             verticalArrangement = Arrangement.spacedBy(3.dp)
         ) {
             Ruler(p.totalMs, vm.zoom, pxPerMs, half)
@@ -111,7 +133,7 @@ private fun Track(
     items: List<TItem>, color: Color, half: Dp, dpPerMs: Float, pxPerMs: Float,
     selected: Selection?, vm: EditorViewModel, scroll: ScrollState, viewPx: Float
 ) {
-    Box(Modifier.fillMaxWidth().height(rowH).pointerInput(Unit) { detectTapGestures { vm.select(null) } }) {
+    Box(Modifier.fillMaxWidth().height(if (items.isEmpty()) 16.dp else rowH).pointerInput(Unit) { detectTapGestures { vm.select(null) } }) {
         items.forEach { item ->
             key(item.id) { ItemBox(item, color, half, dpPerMs, pxPerMs, selected?.kind == item.kind && selected.id == item.id, vm, scroll, viewPx) }
         }

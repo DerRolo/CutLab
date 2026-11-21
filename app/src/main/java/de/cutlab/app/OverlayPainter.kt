@@ -33,9 +33,9 @@ class OverlayPainter(private val images: (String) -> Bitmap?) {
         val st = p.subStyle
         val idx = activeIdx(words, t)
         when (st.kind) {
-            SubKind.CLASSIC -> block(c, w, h, sub.id, words.map { it.text }, -1, w / 2f, st.y * h, st.size, st.color, st.highlight, 1f)
-            SubKind.KARAOKE -> block(c, w, h, sub.id, words.map { it.text }, idx, w / 2f, st.y * h, st.size, st.color, st.highlight, 1f)
-            SubKind.POP -> block(c, w, h, sub.id, listOf(words[idx].text), 0, w / 2f, st.y * h,
+            SubKind.CLASSIC -> block(c, w, h, sub.id, words.map { it.text }, -1, st.x * w, st.y * h, st.size, st.color, st.highlight, 1f)
+            SubKind.KARAOKE -> block(c, w, h, sub.id, words.map { it.text }, idx, st.x * w, st.y * h, st.size, st.color, st.highlight, 1f)
+            SubKind.POP -> block(c, w, h, sub.id, listOf(words[idx].text), 0, st.x * w, st.y * h,
                 st.size * 1.35f, st.highlight, st.highlight, popScale(t - words[idx].startMs))
         }
     }

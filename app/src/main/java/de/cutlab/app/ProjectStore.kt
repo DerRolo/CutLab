@@ -55,7 +55,7 @@ object ProjectStore {
         put("aspect", p.aspect.name)
         put("subStyle", JSONObject().apply {
             put("kind", p.subStyle.kind.name); put("size", p.subStyle.size.toDouble()); put("y", p.subStyle.y.toDouble())
-            put("color", p.subStyle.color); put("highlight", p.subStyle.highlight)
+            put("color", p.subStyle.color); put("highlight", p.subStyle.highlight); put("x", p.subStyle.x.toDouble())
         })
         put("clips", arr(p.clips) { JSONObject().put("id", it.id).put("uri", it.uri).put("src", it.srcDurMs).put("in", it.inMs).put("out", it.outMs) })
         put("texts", arr(p.texts) {
@@ -100,7 +100,7 @@ object ProjectStore {
             },
             subStyle = if (st == null) SubStyle() else SubStyle(
                 SubKind.valueOf(st.getString("kind")), st.getDouble("size").toFloat(), st.getDouble("y").toFloat(),
-                st.getInt("color"), st.getInt("highlight")
+                st.getInt("color"), st.getInt("highlight"), st.optDouble("x", 0.5).toFloat()
             ),
             aspect = AspectPreset.valueOf(j.optString("aspect", AspectPreset.PORTRAIT.name)),
             name = j.optString("name", "Projekt")

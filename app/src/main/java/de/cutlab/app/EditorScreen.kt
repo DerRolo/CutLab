@@ -11,6 +11,7 @@ import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.calculatePan
 import androidx.compose.foundation.gestures.calculateZoom
+import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.graphics.PathEffect
@@ -66,7 +67,14 @@ fun EditorScreen(vm: EditorViewModel = viewModel()) {
         TopBar(vm) { renaming = true }
         PreviewArea(vm, Modifier.weight(1f))
         Transport(vm)
-        Timeline(vm, Modifier.fillMaxWidth().height(215.dp))
+        Box(
+            Modifier.fillMaxWidth().height(20.dp).background(Color(0xFF181820))
+                .pointerInput(Unit) {
+                    detectVerticalDragGestures { ch, dy -> ch.consume(); vm.timelineDp = (vm.timelineDp - dy / density).coerceIn(80f, 360f) }
+                },
+            contentAlignment = Alignment.Center
+        ) { Box(Modifier.width(44.dp).height(4.dp).clip(RoundedCornerShape(2.dp)).background(Color.Gray)) }
+        Timeline(vm, Modifier.fillMaxWidth().height(vm.timelineDp.dp))
         SelectionPanel(vm, onEditText = { editing = vm.selection }, onPresets = { showPresets = true })
         Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).background(Color(0xFF181820))) {
             Tool(Icons.Default.Movie, "Video") { pickVideo.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.VideoOnly)) }
@@ -260,7 +268,7 @@ private fun PreviewArea(vm: EditorViewModel, modifier: Modifier) {
                             val dash = PathEffect.dashPathEffect(floatArrayOf(14f, 14f))
                             val faint = Color.White.copy(alpha = 0.3f)
                             val kind = vm.selection?.kind
-                            if (kind != Kind.SUB) GUIDES_X.forEach { drawLine(faint, Offset(it * size.width, 0f), Offset(it * size.width, size.height), 2f, pathEffect = dash) }
+                            GUIDES_X.forEach { drawLine(faint, Offset(it * size.width, 0f), Offset(it * size.width, size.height), 2f, pathEffect = dash) }
                             GUIDES_Y.forEach { drawLine(faint, Offset(0f, it * size.height), Offset(size.width, it * size.height), 2f, pathEffect = dash) }
                             vm.snapX?.let { drawLine(Color(0xFF69F0AE), Offset(it * size.width, 0f), Offset(it * size.width, size.height), 3f) }
                             vm.snapY?.let { drawLine(Color(0xFF69F0AE), Offset(0f, it * size.height), Offset(size.width, it * size.height), 3f) }
@@ -333,7 +341,6 @@ private fun SelectionPanel(vm: EditorViewModel, onEditText: () -> Unit, onPreset
                     Text("Hervorhebung", color = Color.Gray, fontSize = 11.sp)
                     ColorDots(p.subStyle.highlight) { vm.setSubHighlight(it) }
                 }
-                Text("Groesse/Position gelten fuer alle Untertitel (auch per Geste in der Vorschau)", color = Color.Gray, fontSize = 11.sp)
                 Slider(p.subStyle.size, { vm.setSubSize(it) }, valueRange = 0.025f..0.15f)
             }
             Kind.CLIP, Kind.AUDIO -> Text(

@@ -23,7 +23,7 @@ object PresetStore {
                     o.getString("name"),
                     SubStyle(
                         SubKind.valueOf(o.getString("kind")), o.getDouble("size").toFloat(), o.getDouble("y").toFloat(),
-                        o.getInt("color"), o.getInt("highlight")
+                        o.getInt("color"), o.getInt("highlight"), o.optDouble("x", 0.5).toFloat()
                     )
                 )
             }
@@ -36,7 +36,7 @@ object PresetStore {
         list.forEach {
             a.put(
                 JSONObject().put("name", it.name).put("kind", it.style.kind.name).put("size", it.style.size.toDouble())
-                    .put("y", it.style.y.toDouble()).put("color", it.style.color).put("highlight", it.style.highlight)
+                    .put("y", it.style.y.toDouble()).put("x", it.style.x.toDouble()).put("color", it.style.color).put("highlight", it.style.highlight)
             )
         }
         file(ctx).writeText(JSONObject().put("presets", a).put("default", default ?: "").toString())
