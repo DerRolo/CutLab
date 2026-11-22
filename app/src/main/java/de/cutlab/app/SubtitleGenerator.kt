@@ -277,18 +277,32 @@ object SubtitleGenerator {
                     val hi = bytes[2 * i + 1].toInt()
                     samples[i] = ((hi shl 8) or lo).toShort() / 32768f
                 }
+                val act = speechFrames(samples)
                 onStage("Sprache wird erkannt (${ci + 1}/${clips.size}) ...", -1f)
                 val rows = WhisperLib.transcribe(handle, samples, lang, hint.trim(), threads)
                     ?: error("Spracherkennung fehlgeschlagen oder abgebrochen.")
                 for (r in rows) {
                     val a = r.indexOf('|'); val b = r.indexOf('|', a + 1)
                     if (a < 0 || b < 0) continue
-                    val t0 = r.substring(0, a).toLongOrNull() ?: continue
-                    val t1 = r.substring(a + 1, b).toLongOrNull() ?: continue
+                    var t0 = r.substring(0, a).toLongOrNull() ?: continue
+                    var t1 = r.substring(a + 1, b).toLongOrNull() ?: continue
                     val txt = r.substring(b + 1).trim()
                     if (txt.isEmpty()) continue
                     // Platzhalter wie [BLANK_AUDIO] oder (Musik) ueberspringen
                     if ((txt.startsWith("[") && txt.endsWith("]")) || (txt.startsWith("(") && txt.endsWith(")")) || txt.startsWith("\u266A")) continue
+                    // Whisper dehnt Woerter oft ueber Pausen. Mit der echten Lautstaerke auf den gesprochenen Teil kuerzen.
+                    if (act.isNotEmpty()) {
+                        val m = 80L
+                        val f0 = ((t0 - m) / 20).toInt().coerceIn(0, act.size - 1)
+                        val f1 = ((t1 + m + 19) / 20).toInt().coerceIn(f0, act.size - 1)
+                        var first = -1
+                        var lastA = -1
+                        for (f in f0..f1) if (act[f]) { if (first < 0) first = f; lastA = f }
+                        if (first < 0) continue                       // dort ist nichts zu hoeren (Stille / erfundenes Wort)
+                        t0 = maxOf(t0 - m, first * 20L)
+                        t1 = minOf(t1 + m, (lastA + 1) * 20L + 60L)
+                        if (t1 < t0 + 80) t1 = t0 + 80
+                    }
                     // reine Satzzeichen an das vorige Wort haengen
                     if (txt.none { it.isLetterOrDigit() } && words.isNotEmpty()) {
                         val last = words.removeAt(words.lastIndex)
@@ -300,6 +314,34 @@ object SubtitleGenerator {
             }
         } finally { WhisperLib.release() }
         return words
+    }
+
+    /** Pro 20 ms: ist dort Sprache/Ton zu hoeren? (Lautstaerke ueber dem Grundrauschen) */
+    private fun speechFrames(samples: FloatArray): BooleanArray {
+        val fl = 320
+        val n = samples.size / fl
+        if (n == 0) return BooleanArray(0)
+        val e = FloatArray(n)
+        for (i in 0 until n) {
+            var sum = 0f
+            val o = i * fl
+            for (k in 0 until fl) { val v = samples[o + k]; sum += v * v }
+            e[i] = kotlin.math.sqrt(sum / fl)
+        }
+        val sorted = e.sortedArray()
+        val noise = sorted[(n * 0.2).toInt().coerceAtMost(n - 1)]
+        val peak = sorted[(n * 0.95).toInt().coerceAtMost(n - 1)]
+        val thr = maxOf(noise * 2.5f, peak * 0.06f, 0.004f)
+        val raw = BooleanArray(n) { e[it] > thr }
+        val out = raw.copyOf()
+        var last = -100
+        for (i in 0 until n) {                                    // kurze Luecken (bis 100 ms) schliessen
+            if (raw[i]) {
+                if (i - last in 2..6) for (j in last + 1 until i) out[j] = true
+                last = i
+            }
+        }
+        return out
     }
 
     private fun vosk(ctx: Context, clips: List<Clip>, lang: VoskLang, onStage: (String, Float) -> Unit): List<Word> {
@@ -346,7 +388,7 @@ object SubtitleGenerator {
                 val comma = last.endsWith(",") && cur.size >= 3
                 val gap = w.startMs - cur.last().endMs
                 val len = cur.sumOf { it.text.length + 1 }
-                if (gap > 700 || sentenceEnd || comma || cur.size >= 6 || len + w.text.length > 32 || w.endMs - cur.first().startMs > 3500) flush()
+                if (gap > 500 || sentenceEnd || comma || cur.size >= 6 || len + w.text.length > 32 || w.endMs - cur.first().startMs > 3500) flush()
             }
             cur.add(w)
         }

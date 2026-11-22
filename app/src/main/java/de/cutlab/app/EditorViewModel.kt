@@ -66,6 +66,7 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
     var snapGuideMs by mutableStateOf<Long?>(null); private set     // gelbe Einrast-Linie in der Timeline
     var dragInfo by mutableStateOf<String?>(null); private set      // Zeitanzeige beim Ziehen/Kuerzen
     private var lastDragged: Selection? = null
+    private var anchorMs = 0L                                          // Playhead vor dem Ziehen (zum Einrasten)
     private var dragRaw = Float.NaN
     private var laneAcc = 0f
     private var zoomBefore = 0f
@@ -457,7 +458,7 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
     fun setSubHighlight(c: Int) = live { p -> p.copy(subStyle = p.subStyle.copy(highlight = c)) }
 
     // ---------- Timeline-Drags ----------
-    fun beginDrag() { snap(); dragRaw = Float.NaN; laneAcc = 0f; snapGuideMs = null; lastDragged = null; dragInfo = null }
+    fun beginDrag() { snap(); dragRaw = Float.NaN; laneAcc = 0f; snapGuideMs = null; lastDragged = null; dragInfo = ""; anchorMs = posMs }
 
     /** Feinmodus: beim Verschieben/Kuerzen zoomt die Timeline heran und springt an die Kante (Anzeige im Vorschaubild). */
     fun beginFine(edgeMs: Long) {
@@ -652,7 +653,7 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
         val p = project
         val lane = laneOf(k, id) ?: 0
         val pts = ArrayList<Long>()
-        pts.add(0L); pts.add(posMs)
+        pts.add(0L); pts.add(anchorMs)
         p.clips.filter { it.id != id }.forEach { pts.add(it.startMs); pts.add(it.startMs + it.durMs) }
         when (k) {
             Kind.TEXT -> p.texts.filter { it.id != id && it.lane == lane }.forEach { pts.add(it.startMs); pts.add(it.startMs + it.durMs) }
@@ -692,7 +693,7 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
         if (dragRaw < 0f) dragRaw = 0f
         val ns = snapSpan(dragRaw.toLong(), dur, snapPoints(k, id)).coerceAtLeast(0L)
         moveByDelta(k, id, (ns - cur).toFloat())
-        dragInfo = "Start ${fmtTime(ns)}  \u00B7  Ende ${fmtTime(ns + dur)}"
+        seekTo(ns)                                       // der weisse Strich folgt dem Anfang und zeigt dessen Zeit
     }
 
     fun trimStart(k: Kind, id: Long, d: Float) {
@@ -705,7 +706,7 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
         trimStartRaw(k, id, (edge - cur).toFloat())
         val now = startOf(k, id) ?: return
         if (now != edge) dragRaw = now.toFloat()           // an Grenze gestoppt: Rohwert folgt der Realitaet
-        dragInfo = "Start ${fmtTime(now)}"
+        seekTo(now)
     }
 
     fun trimEnd(k: Kind, id: Long, d: Float) {
@@ -718,7 +719,7 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
         trimEndRaw(k, id, (edge - (cur + dur)).toFloat())
         val end = (startOf(k, id) ?: return) + (durOf(k, id) ?: return)
         if (end != edge) dragRaw = end.toFloat()
-        dragInfo = "Ende ${fmtTime(end)}"
+        seekTo(end)
     }
 
     private fun moveByDelta(k: Kind, id: Long, d: Float) {

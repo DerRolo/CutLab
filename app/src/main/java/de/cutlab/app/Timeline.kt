@@ -130,7 +130,7 @@ fun Timeline(vm: EditorViewModel, modifier: Modifier = Modifier, onEdit: (Select
                             if (ev.changes.count { it.pressed } >= 2) {
                                 val z = ev.calculateZoom()
                                 if (z != 1f) {
-                                    vm.zoom = (vm.zoom * z).coerceIn(15f, 400f)
+                                    vm.zoom = (vm.zoom * z).coerceIn(2f, 400f)
                                     ev.changes.forEach { it.consume() }
                                 }
                             }
@@ -171,16 +171,10 @@ fun Timeline(vm: EditorViewModel, modifier: Modifier = Modifier, onEdit: (Select
                         drawLine(Color(0xFFFFEB3B), Offset(x, 0f), Offset(x, size.height), 3f)
                     }
                 }
-                // Zeitanzeige beim Verschieben/Kuerzen
-                vm.dragInfo?.let { info ->
-                    Text(
-                        info, color = Color.White, fontSize = 12.sp,
-                        modifier = Modifier.align(Alignment.TopCenter).padding(top = RULER)
-                            .background(Color(0xE6000000), RoundedCornerShape(10.dp)).padding(horizontal = 10.dp, vertical = 4.dp)
-                    )
-                }
-                // feststehender Playhead in der Mitte
-                Box(Modifier.align(Alignment.TopCenter).width(2.dp).fillMaxHeight().background(Color.White))
+                // feststehender Playhead in der Mitte; beim Verschieben/Kuerzen rot mit Zeitanzeige
+                val dragging = vm.dragInfo != null
+                Box(Modifier.align(Alignment.TopCenter).width(2.dp).fillMaxHeight().background(if (dragging) Color(0xFFFF3B30) else Color.White))
+                if (dragging) PlayheadTime(vm, Modifier.align(Alignment.TopCenter).padding(top = RULER))
                 // Bearbeiten / Loeschen fuer das ausgewaehlte Element
                 val s = vm.selection
                 if (s != null) {
@@ -218,13 +212,16 @@ private fun ScrollSync(vm: EditorViewModel, scroll: ScrollState, pxPerMs: Float)
 private fun Ruler(totalMs: Long, dpPerSec: Float, pxPerMs: Float, half: Dp) {
     val paint = remember { android.graphics.Paint().apply { color = android.graphics.Color.GRAY; textSize = 24f; isAntiAlias = true } }
     Canvas(Modifier.fillMaxWidth().height(RULER)) {
-        val step = if (dpPerSec < 40f) 5000L else if (dpPerSec > 200f) 250L else 1000L
+        val step = if (dpPerSec < 4f) 60000L else if (dpPerSec < 10f) 30000L else if (dpPerSec < 25f) 10000L else if (dpPerSec < 40f) 5000L else if (dpPerSec > 200f) 250L else 1000L
         val h0 = half.toPx()
         var t = 0L
         while (t <= totalMs) {
             val x = h0 + t * pxPerMs
             drawLine(Color.Gray, Offset(x, size.height - 8.dp.toPx()), Offset(x, size.height), 2f)
-            if (t % 1000L == 0L) drawIntoCanvas { it.nativeCanvas.drawText("${t / 1000}s", x + 4f, 20f, paint) }
+            if (t % 1000L == 0L) {
+                val label = if (t >= 60000L) "%d:%02d".format(t / 60000L, (t / 1000L) % 60L) else "${t / 1000}s"
+                drawIntoCanvas { it.nativeCanvas.drawText(label, x + 4f, 20f, paint) }
+            }
             t += step
         }
     }
@@ -353,4 +350,12 @@ private fun ThumbStrip(item: TItem, vm: EditorViewModel, scroll: ScrollState, ha
             i++
         }
     }
+}
+
+@Composable
+private fun PlayheadTime(vm: EditorViewModel, modifier: Modifier) {
+    Text(
+        fmtTime(vm.posMs), color = Color.White, fontSize = 12.sp,
+        modifier = modifier.background(Color(0xFFFF3B30), RoundedCornerShape(8.dp)).padding(horizontal = 8.dp, vertical = 2.dp)
+    )
 }

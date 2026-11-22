@@ -376,7 +376,7 @@ private fun Transport(vm: EditorViewModel) {
         AspectPreset.values().forEach { a ->
             FilterChip(selected = vm.project.aspect == a, onClick = { vm.setAspect(a) }, label = { Text(a.label, fontSize = 11.sp) }, modifier = Modifier.padding(horizontal = 2.dp))
         }
-        IconButton(onClick = { vm.zoom = (vm.zoom * 0.75f).coerceAtLeast(15f) }) { Icon(Icons.Default.ZoomOut, "Zoom -", tint = Color.White) }
+        IconButton(onClick = { vm.zoom = (vm.zoom * 0.75f).coerceAtLeast(2f) }) { Icon(Icons.Default.ZoomOut, "Zoom -", tint = Color.White) }
         IconButton(onClick = { vm.zoom = (vm.zoom * 1.33f).coerceAtMost(400f) }) { Icon(Icons.Default.ZoomIn, "Zoom +", tint = Color.White) }
     }
 }
