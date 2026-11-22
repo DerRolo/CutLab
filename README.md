@@ -19,7 +19,9 @@ Bei jedem Upload auf GitHub baut sich die App automatisch neu und erscheint als 
 - Timeline mit zwei Fingern rein- und rauszoomen (oder mit der Lupe); den Griff über der Timeline nach oben/unten ziehen, um sie größer oder kleiner zu machen
 
 **Mehrere Videospuren (Overlay)**
-- Mit „Overlay" legst du ein weiteres Video auf Spur „Video 2" oder „Video 3" (die obere Spur liegt oben)
+- Mit „Overlay" legst du ein weiteres Video auf die erste freie Videospur (Video 2, Video 3, …). Höhere Spuren liegen oben, **Video 1** (Hauptspur) bleibt immer unten
+- Links in der Timeline stehen die Spurnamen (Video 1/2/3, Untertitel, Text 1/2, Bild 1/2, Ton 1/2); Ton-Spuren wachsen nach unten
+- Element lange drücken und nach oben/unten ziehen wechselt die Spur; ganz an den Rand gezogen entsteht eine neue Spur
 - Frei verschiebbar und kürzbar wie alle anderen Elemente, rastet an Nachbarn ein
 - In der Vorschau mit einem Finger verschieben und mit zwei Fingern skalieren (Bild-in-Bild)
 - Ton an/aus, Ein- und Ausblenden (Fade 0,3 / 0,6 / 1 s) für weiche Übergänge
@@ -27,6 +29,7 @@ Bei jedem Upload auf GitHub baut sich die App automatisch neu und erscheint als 
 
 **Spuren**
 - Text, Bilder und Musik als eigene Spuren unter dem Video
+- Feinmodus: Element lange drücken oder Anfang/Ende anfassen – die Timeline zoomt automatisch heran und springt an die Kante, nach dem Loslassen ist der Zoom wieder wie vorher
 - Zeitlich verschieben und in der Länge ziehen; Elemente rasten an Nachbarn, am Playhead und an Clip-Grenzen ein (gelbe Linie)
 - Text und Bilder direkt in der Vorschau verschieben und mit zwei Fingern skalieren
 - Hilfslinien (Mitte, Ränder, goldener Schnitt): Elemente rasten sanft ein, lassen sich aber trotzdem weiterziehen
@@ -34,7 +37,7 @@ Bei jedem Upload auf GitHub baut sich die App automatisch neu und erscheint als 
 **Untertitel automatisch**
 - Drei Genauigkeitsstufen: **Whisper small** (am genauesten, empfohlen), **Whisper base** (schneller) und **Vosk** (einfach, oft ungenau)
 - Sprache wählen oder automatisch erkennen lassen; Namen und besondere Wörter (z. B. Städte) lassen sich vorgeben, damit sie richtig geschrieben werden
-- Läuft offline; beim ersten Mal wird das Sprachmodell geladen (60–190 MB)
+- Läuft offline; das Sprachmodell (Deutsch, Englisch und viele weitere Sprachen) wird beim allerersten Start der App einmalig geladen (ca. 190 MB, WLAN empfohlen)
 - Drei Stile: Klassisch, Karaoke (aktuelles Wort farbig) und Pop-up (aktuelles Wort poppt auf)
 - Größe, Position (auch links/rechts, mit Einrasten in der Mitte), Schrift-, Hervorhebungs- und Konturfarbe gelten für alle Untertitel auf einmal
 - Untertitel oder Text antippen: am weißen Rahmen in der Vorschau erscheint ein **Stift** (Text bearbeiten) und ein **Mülleimer**; dieselben Knöpfe gibt es oben links in der Timeline

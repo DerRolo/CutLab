@@ -12,7 +12,7 @@ android {
         applicationId = "de.cutlab.app"
         minSdk = 29
         targetSdk = 35
-        versionCode = 1
+        versionCode = (project.findProperty("buildNumber") as String?)?.toIntOrNull() ?: 1
         versionName = "0.1"
         ndk { abiFilters += listOf("arm64-v8a") }      // moderne 64-Bit-Handys
     }
@@ -20,6 +20,15 @@ android {
         cmake {
             path = file("src/main/cpp/CMakeLists.txt")
             version = "3.22.1"
+        }
+    }
+    // Fester Schluessel: Updates lassen sich ueber die installierte App spielen (Projekte und Modelle bleiben erhalten)
+    signingConfigs {
+        getByName("debug") {
+            storeFile = file("cutlab-debug.keystore")
+            storePassword = "android"
+            keyAlias = "androiddebugkey"
+            keyPassword = "android"
         }
     }
     buildFeatures { compose = true }

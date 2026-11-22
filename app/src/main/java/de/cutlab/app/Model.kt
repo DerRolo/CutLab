@@ -15,13 +15,15 @@ data class TextItem(
     val x: Float = 0.5f, val y: Float = 0.5f,
     val size: Float = 0.06f,          // Anteil der Bildhoehe
     val color: Int = Color.WHITE,
-    val outline: Int = Color.BLACK      // Konturfarbe (Alpha 0 = keine Kontur)
+    val outline: Int = Color.BLACK,     // Konturfarbe (Alpha 0 = keine Kontur)
+    val lane: Int = 0                   // Spur (Text 1, Text 2, ...)
 )
 
 data class ImageItem(
     val id: Long, val uri: String, val startMs: Long, val durMs: Long,
     val x: Float = 0.5f, val y: Float = 0.5f,
-    val scale: Float = 0.4f           // Breite als Anteil der Bildbreite
+    val scale: Float = 0.4f,          // Breite als Anteil der Bildbreite
+    val lane: Int = 0
 )
 
 /** Zusaetzliches Video auf einer Overlay-Spur (Bild-in-Bild, Ueberblenden). */
@@ -38,7 +40,8 @@ data class VideoItem(
 
 data class AudioItem(
     val id: Long, val uri: String, val name: String, val srcDurMs: Long,
-    val startMs: Long, val inMs: Long, val durMs: Long
+    val startMs: Long, val inMs: Long, val durMs: Long,
+    val lane: Int = 0
 )
 
 data class Word(val text: String, val startMs: Long, val endMs: Long)

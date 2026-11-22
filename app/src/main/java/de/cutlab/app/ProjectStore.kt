@@ -60,11 +60,11 @@ object ProjectStore {
         put("clips", arr(p.clips) { JSONObject().put("id", it.id).put("uri", it.uri).put("src", it.srcDurMs).put("in", it.inMs).put("out", it.outMs) })
         put("texts", arr(p.texts) {
             JSONObject().put("id", it.id).put("text", it.text).put("s", it.startMs).put("d", it.durMs)
-                .put("x", it.x.toDouble()).put("y", it.y.toDouble()).put("size", it.size.toDouble()).put("color", it.color).put("outline", it.outline)
+                .put("x", it.x.toDouble()).put("y", it.y.toDouble()).put("size", it.size.toDouble()).put("color", it.color).put("outline", it.outline).put("lane", it.lane)
         })
         put("images", arr(p.images) {
             JSONObject().put("id", it.id).put("uri", it.uri).put("s", it.startMs).put("d", it.durMs)
-                .put("x", it.x.toDouble()).put("y", it.y.toDouble()).put("scale", it.scale.toDouble())
+                .put("x", it.x.toDouble()).put("y", it.y.toDouble()).put("scale", it.scale.toDouble()).put("lane", it.lane)
         })
         put("videos", arr(p.videos) {
             JSONObject().put("id", it.id).put("uri", it.uri).put("src", it.srcDurMs).put("aspect", it.aspect.toDouble())
@@ -74,7 +74,7 @@ object ProjectStore {
         })
         put("audios", arr(p.audios) {
             JSONObject().put("id", it.id).put("uri", it.uri).put("name", it.name).put("src", it.srcDurMs)
-                .put("s", it.startMs).put("in", it.inMs).put("d", it.durMs)
+                .put("s", it.startMs).put("in", it.inMs).put("d", it.durMs).put("lane", it.lane)
         })
         put("subs", arr(p.subs) { s ->
             JSONObject().put("id", s.id).put("s", s.startMs).put("e", s.endMs).put("text", s.text)
@@ -91,11 +91,11 @@ object ProjectStore {
             clips = list(j.optJSONArray("clips")) { Clip(it.getLong("id"), it.getString("uri"), it.getLong("src"), it.getLong("in"), it.getLong("out")) },
             texts = list(j.optJSONArray("texts")) {
                 TextItem(it.getLong("id"), it.getString("text"), it.getLong("s"), it.getLong("d"),
-                    it.getDouble("x").toFloat(), it.getDouble("y").toFloat(), it.getDouble("size").toFloat(), it.getInt("color"), it.optInt("outline", 0xFF000000.toInt()))
+                    it.getDouble("x").toFloat(), it.getDouble("y").toFloat(), it.getDouble("size").toFloat(), it.getInt("color"), it.optInt("outline", 0xFF000000.toInt()), it.optInt("lane", 0))
             },
             images = list(j.optJSONArray("images")) {
                 ImageItem(it.getLong("id"), it.getString("uri"), it.getLong("s"), it.getLong("d"),
-                    it.getDouble("x").toFloat(), it.getDouble("y").toFloat(), it.getDouble("scale").toFloat())
+                    it.getDouble("x").toFloat(), it.getDouble("y").toFloat(), it.getDouble("scale").toFloat(), it.optInt("lane", 0))
             },
             videos = list(j.optJSONArray("videos")) {
                 VideoItem(it.getLong("id"), it.getString("uri"), it.getLong("src"), it.getDouble("aspect").toFloat(),
@@ -103,7 +103,7 @@ object ProjectStore {
                     it.getDouble("scale").toFloat(), it.getInt("track"), it.getLong("fade"), it.getBoolean("muted"), it.optBoolean("hasAudio", true))
             },
             audios = list(j.optJSONArray("audios")) {
-                AudioItem(it.getLong("id"), it.getString("uri"), it.getString("name"), it.getLong("src"), it.getLong("s"), it.getLong("in"), it.getLong("d"))
+                AudioItem(it.getLong("id"), it.getString("uri"), it.getString("name"), it.getLong("src"), it.getLong("s"), it.getLong("in"), it.getLong("d"), it.optInt("lane", 0))
             },
             subs = list(j.optJSONArray("subs")) { s ->
                 Subtitle(s.getLong("id"), s.getLong("s"), s.getLong("e"), s.getString("text"),

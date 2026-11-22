@@ -27,8 +27,8 @@ class OverlayPainter(
     fun draw(c: Canvas, w: Int, h: Int, t: Long, p: Project) {
         bounds.clear()
         for (v in p.videos.sortedBy { it.track }) if (active(t, v.startMs, v.durMs)) drawVideo(c, w, h, v, t)
-        for (im in p.images) if (active(t, im.startMs, im.durMs)) drawImage(c, w, h, im)
-        for (tx in p.texts) if (active(t, tx.startMs, tx.durMs)) {
+        for (im in p.images.sortedBy { it.lane }) if (active(t, im.startMs, im.durMs)) drawImage(c, w, h, im)
+        for (tx in p.texts.sortedBy { it.lane }) if (active(t, tx.startMs, tx.durMs)) {
             val ws = tx.text.split(Regex("\\s+")).filter { it.isNotEmpty() }
             block(c, w, h, tx.id, ws, -1, tx.x * w, tx.y * h, tx.size, tx.color, tx.color, tx.outline, 1f)
         }

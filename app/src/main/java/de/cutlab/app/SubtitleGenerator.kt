@@ -5,6 +5,8 @@ import android.media.MediaCodec
 import android.media.MediaExtractor
 import android.media.MediaFormat
 import android.net.Uri
+import android.os.Handler
+import android.os.Looper
 import org.json.JSONObject
 import org.vosk.Model
 import org.vosk.Recognizer
@@ -172,6 +174,35 @@ object WhisperLib {
     external fun freeContext(ctx: Long)
     external fun transcribe(ctx: Long, audio: FloatArray, lang: String, prompt: String, threads: Int): Array<String>?
     external fun abort()
+
+    // Geladenes Modell bleibt nach der Erkennung noch 3 Minuten im Speicher (naechster Durchlauf startet sofort)
+    private var cachedCtx = 0L
+    private var cachedKey: String? = null
+    private var busy = false
+    private val handler = Handler(Looper.getMainLooper())
+    private val releaseTask = Runnable {
+        synchronized(WhisperLib) {
+            if (!busy && cachedCtx != 0L) { freeContext(cachedCtx); cachedCtx = 0L; cachedKey = null }
+        }
+    }
+
+    @Synchronized
+    fun acquire(key: String, path: String): Long {
+        handler.removeCallbacks(releaseTask)
+        if (cachedKey != key || cachedCtx == 0L) {
+            if (cachedCtx != 0L) freeContext(cachedCtx)
+            cachedCtx = initContext(path)
+            cachedKey = if (cachedCtx != 0L) key else null
+        }
+        busy = true
+        return cachedCtx
+    }
+
+    @Synchronized
+    fun release() {
+        busy = false
+        handler.postDelayed(releaseTask, 180_000)
+    }
 }
 
 object WhisperModels {
@@ -227,7 +258,7 @@ object SubtitleGenerator {
         if (!WhisperLib.available) error("Whisper ist in dieser App-Version nicht enthalten. Bitte \"Einfach (Vosk)\" wählen.")
         val model = WhisperModels.ensure(ctx, engine) { onStage("Sprachmodell wird geladen ...", it) }
         onStage("Modell wird gestartet ...", -1f)
-        val handle = WhisperLib.initContext(model.absolutePath)
+        val handle = WhisperLib.acquire(engine.name, model.absolutePath)
         if (handle == 0L) error("Whisper-Modell konnte nicht geladen werden.")
         val words = mutableListOf<Word>()
         val threads = Runtime.getRuntime().availableProcessors().coerceIn(2, 6)
@@ -268,7 +299,7 @@ object SubtitleGenerator {
                 }
                 offset += c.durMs
             }
-        } finally { WhisperLib.freeContext(handle) }
+        } finally { WhisperLib.release() }
         return words
     }
 

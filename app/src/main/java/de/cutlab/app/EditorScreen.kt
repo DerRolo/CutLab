@@ -407,7 +407,6 @@ private fun SelectionPanel(vm: EditorViewModel, onEditText: () -> Unit, onPreset
                         listOf(0L to "Ohne Fade", 300L to "Fade 0,3 s", 600L to "Fade 0,6 s", 1000L to "Fade 1 s").forEach { (ms, label) ->
                             FilterChip(selected = v.fadeMs == ms, onClick = { vm.setVideoFade(v.id, ms) }, label = { Text(label, fontSize = 12.sp) }, modifier = Modifier.padding(end = 4.dp))
                         }
-                        FilterChip(selected = v.track == 1, onClick = { vm.setVideoTrack(v.id, if (v.track == 0) 1 else 0) }, label = { Text(if (v.track == 0) "Nach oben (Spur 3)" else "Nach unten (Spur 2)", fontSize = 12.sp) })
                     }
                     Text("Größe (oder mit zwei Fingern in der Vorschau)", color = Color.Gray, fontSize = 11.sp)
                     Slider(v.scale, { vm.setVideoScale(v.id, it) }, valueRange = 0.1f..1.5f)

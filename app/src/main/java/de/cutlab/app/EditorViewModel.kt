@@ -66,6 +66,9 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
     var dragClipId by mutableStateOf<Long?>(null); private set      // Hauptspur-Clip, der gerade gezogen wird
     var dragClipMs by mutableFloatStateOf(0f); private set          // Versatz des gezogenen Clips (Vorschau)
     private var dragRaw = Float.NaN
+    private var laneAcc = 0f
+    private var zoomBefore = 0f
+    private var setupRunning = false
     private var job: Job? = null
     private var exporter: Exporter? = null
 
@@ -77,6 +80,7 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
         currentId = id
         ProjectStore.setLast(app, id)
         applyLoaded(ProjectStore.load(app, id) ?: Project())
+        firstRunSetup()
         viewModelScope.launch {
             snapshotFlow { project }.collectLatest { p ->
                 delay(600)
@@ -269,7 +273,7 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
         snap()
         val (s, d) = slot()
         val id = nid()
-        set(project.copy(texts = project.texts + TextItem(id, "Text", s, d)))
+        set(project.copy(texts = project.texts + TextItem(id, "Text", s, d, lane = freeLane(project.texts.map { Triple(it.lane, it.startMs, it.startMs + it.durMs) }, s, s + d))))
         selection = Selection(Kind.TEXT, id)
         return id
     }
@@ -282,7 +286,7 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
             snap()
             val (s, d) = slot()
             val id = nid()
-            set(project.copy(images = project.images + ImageItem(id, local, s, d)))
+            set(project.copy(images = project.images + ImageItem(id, local, s, d, lane = freeLane(project.images.map { Triple(it.lane, it.startMs, it.startMs + it.durMs) }, s, s + d))))
             selection = Selection(Kind.IMAGE, id)
         }
     }
@@ -300,7 +304,7 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
             val dur = minOf(meta.dur, total - start)
             snap()
             val id = nid()
-            set(project.copy(audios = project.audios + AudioItem(id, meta.uri, name, meta.dur, start, 0, dur)))
+            set(project.copy(audios = project.audios + AudioItem(id, meta.uri, name, meta.dur, start, 0, dur, lane = freeLane(project.audios.map { Triple(it.lane, it.startMs, it.startMs + it.durMs) }, start, start + dur))))
             selection = Selection(Kind.AUDIO, id)
         }
     }
@@ -317,12 +321,12 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
             val total = project.totalMs
             val start = posMs.coerceAtMost((total - MIN).coerceAtLeast(0L))
             val dur = minOf(meta.dur, total - start).coerceAtLeast(MIN)
-            val free0 = project.videos.none { it.track == 0 && it.startMs < start + dur && it.startMs + it.durMs > start }
+            val lane = freeLane(project.videos.map { Triple(it.track, it.startMs, it.startMs + it.durMs) }, start, start + dur)
             snap()
             val id = nid()
             set(project.copy(videos = project.videos + VideoItem(
                 id, meta.uri, meta.dur, meta.w.toFloat() / meta.h, start, 0, dur,
-                track = if (free0) 0 else 1, hasAudio = meta.hasAudio
+                track = lane, hasAudio = meta.hasAudio
             )))
             selection = Selection(Kind.VIDEO, id)
         }
@@ -453,9 +457,65 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
     fun setSubHighlight(c: Int) = live { p -> p.copy(subStyle = p.subStyle.copy(highlight = c)) }
 
     // ---------- Timeline-Drags ----------
-    fun beginDrag() { snap(); dragRaw = Float.NaN; dragClipId = null; dragClipMs = 0f; snapGuideMs = null }
+    fun beginDrag() { snap(); dragRaw = Float.NaN; laneAcc = 0f; dragClipId = null; dragClipMs = 0f; snapGuideMs = null }
+
+    /** Feinmodus: beim Verschieben/Kuerzen zoomt die Timeline heran und springt an die Kante (Anzeige im Vorschaubild). */
+    fun beginFine(edgeMs: Long) {
+        if (zoomBefore == 0f) zoomBefore = zoom
+        zoom = maxOf(zoom, 280f)
+        seekTo(edgeMs)
+    }
+
+    private fun endFine() { if (zoomBefore != 0f) { zoom = zoomBefore; zoomBefore = 0f } }
+
+    // ---------- Spuren (Lanes) ----------
+    private fun laneOf(k: Kind, id: Long): Int? = when (k) {
+        Kind.TEXT -> project.texts.find { it.id == id }?.lane
+        Kind.IMAGE -> project.images.find { it.id == id }?.lane
+        Kind.AUDIO -> project.audios.find { it.id == id }?.lane
+        Kind.VIDEO -> project.videos.find { it.id == id }?.track
+        else -> null
+    }
+
+    private fun maxLaneOf(k: Kind): Int = (when (k) {
+        Kind.TEXT -> project.texts.maxOfOrNull { it.lane }
+        Kind.IMAGE -> project.images.maxOfOrNull { it.lane }
+        Kind.AUDIO -> project.audios.maxOfOrNull { it.lane }
+        Kind.VIDEO -> project.videos.maxOfOrNull { it.track }
+        else -> null
+    }) ?: 0
+
+    private fun setLane(k: Kind, id: Long, l: Int) {
+        val p = project
+        project = when (k) {
+            Kind.TEXT -> p.copy(texts = p.texts.map { if (it.id == id) it.copy(lane = l) else it })
+            Kind.IMAGE -> p.copy(images = p.images.map { if (it.id == id) it.copy(lane = l) else it })
+            Kind.AUDIO -> p.copy(audios = p.audios.map { if (it.id == id) it.copy(lane = l) else it })
+            Kind.VIDEO -> p.copy(videos = p.videos.map { if (it.id == id) it.copy(track = l) else it })
+            else -> p
+        }
+    }
+
+    /** Senkrechtes Ziehen wechselt die Spur (Video/Text/Bild: nach oben = hoehere Spur, Ton: nach unten). */
+    fun dragLane(k: Kind, id: Long, dyPx: Float, stridePx: Float) {
+        if (k == Kind.CLIP || k == Kind.SUB || stridePx <= 0f) return
+        laneAcc += dyPx
+        val steps = (laneAcc / stridePx).toInt()
+        if (steps == 0) return
+        laneAcc -= steps * stridePx
+        val cur = laneOf(k, id) ?: return
+        val delta = if (k == Kind.AUDIO) steps else -steps
+        setLane(k, id, (cur + delta).coerceIn(0, minOf(maxLaneOf(k) + 1, 5)))
+    }
+
+    /** Niedrigste Spur, auf der im Zeitraum noch nichts liegt. */
+    private fun freeLane(occupied: List<Triple<Int, Long, Long>>, start: Long, end: Long): Int {
+        for (l in 0 until 5) if (occupied.none { it.first == l && it.second < end && it.third > start }) return l
+        return 5
+    }
 
     fun endDrag() {
+        endFine()
         snapGuideMs = null; dragRaw = Float.NaN
         val cid = dragClipId
         if (cid != null) {
@@ -501,15 +561,16 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
     /** Punkte, an denen Elemente einrasten: Anfang, Ende, Playhead, Clip-Grenzen und Kanten der Nachbarn. */
     private fun snapPoints(k: Kind, id: Long): List<Long> {
         val p = project
+        val lane = laneOf(k, id) ?: 0
         val pts = ArrayList<Long>()
         pts.add(0L); pts.add(posMs); pts.add(p.totalMs)
         var acc = 0L
         p.clips.forEach { acc += it.durMs; pts.add(acc) }
         when (k) {
-            Kind.TEXT -> p.texts.filter { it.id != id }.forEach { pts.add(it.startMs); pts.add(it.startMs + it.durMs) }
-            Kind.IMAGE -> p.images.filter { it.id != id }.forEach { pts.add(it.startMs); pts.add(it.startMs + it.durMs) }
-            Kind.AUDIO -> p.audios.filter { it.id != id }.forEach { pts.add(it.startMs); pts.add(it.startMs + it.durMs) }
-            Kind.VIDEO -> p.videos.filter { it.id != id }.forEach { pts.add(it.startMs); pts.add(it.startMs + it.durMs) }
+            Kind.TEXT -> p.texts.filter { it.id != id && it.lane == lane }.forEach { pts.add(it.startMs); pts.add(it.startMs + it.durMs) }
+            Kind.IMAGE -> p.images.filter { it.id != id && it.lane == lane }.forEach { pts.add(it.startMs); pts.add(it.startMs + it.durMs) }
+            Kind.AUDIO -> p.audios.filter { it.id != id && it.lane == lane }.forEach { pts.add(it.startMs); pts.add(it.startMs + it.durMs) }
+            Kind.VIDEO -> p.videos.filter { it.id != id && it.track == lane }.forEach { pts.add(it.startMs); pts.add(it.startMs + it.durMs) }
             Kind.SUB -> p.subs.filter { it.id != id }.forEach { pts.add(it.startMs); pts.add(it.endMs) }
             Kind.CLIP -> {}
         }
@@ -703,7 +764,30 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    /** Beim allerersten Start: Sprachmodell (Deutsch, Englisch und viele weitere Sprachen) einmalig laden. */
+    private fun firstRunSetup() {
+        val ctx = getApplication<Application>()
+        val skip = File(ctx.filesDir, "setup_skipped")
+        val model = File(File(ctx.filesDir, "whisper"), "ggml-small-q5_1.bin")
+        if (skip.exists() || (model.exists() && model.length() > 10_000_000)) return
+        job = viewModelScope.launch {
+            setupRunning = true
+            busy = "Einmalige Einrichtung: Sprachmodell (Deutsch, Englisch u. a.) wird geladen ..."
+            busyProgress = 0f
+            try {
+                withContext(Dispatchers.IO) {
+                    if (WhisperLib.available) WhisperModels.ensure(ctx, AsrEngine.WHISPER_SMALL) { busyProgress = it }
+                }
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Throwable) {
+                message = "Das Sprachmodell konnte nicht geladen werden (kein Internet?). Es wird beim ersten Erzeugen von Untertiteln nachgeholt."
+            } finally { busy = null; setupRunning = false }
+        }
+    }
+
     fun cancelBusy() {
+        if (setupRunning) { try { File(getApplication<Application>().filesDir, "setup_skipped").writeText("1") } catch (_: Exception) {} }
         try { WhisperLib.abort() } catch (_: Throwable) {}
         exporter?.cancel(); exporter = null
         job?.cancel()
