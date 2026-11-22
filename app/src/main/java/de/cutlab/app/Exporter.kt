@@ -61,15 +61,53 @@ class Exporter(private val ctx: Context, private val images: ImageCache) {
         val ch = p.aspect.h
         val fit = Presentation.createForWidthAndHeight(cw, ch, Presentation.LAYOUT_SCALE_TO_FIT)
 
-        val vItems = p.clips.map { c ->
+        if (total <= 0L) { onDone("Das Projekt ist leer."); return }
+
+        // Schwarzes Bild fuer Luecken auf der Hauptspur (und fuer Projekte ohne Hauptvideo)
+        val black = File(ctx.cacheDir, "black_${cw}x$ch.png")
+        if (!black.exists()) {
+            val bmp = Bitmap.createBitmap(cw, ch, Bitmap.Config.ARGB_8888)
+            bmp.eraseColor(0xFF000000.toInt())
+            black.outputStream().use { bmp.compress(Bitmap.CompressFormat.PNG, 100, it) }
+        }
+        fun blackItem(ms: Long): EditedMediaItem = EditedMediaItem.Builder(
+            MediaItem.Builder().setUri(Uri.fromFile(black)).setImageDurationMs(ms).build()
+        ).setFrameRate(30).build()
+
+        // Hauptspur: nur Bild (Ton kommt unten pro Clip als eigene Audiospur mit korrektem Startpunkt)
+        val vItems = ArrayList<EditedMediaItem>()
+        var cursor = 0L
+        for (c in p.clips.sortedBy { it.startMs }) {
+            val start = maxOf(c.startMs, cursor)
+            if (start > cursor) vItems.add(blackItem(start - cursor))
             val mi = MediaItem.Builder().setUri(c.uri).setClippingConfiguration(
                 MediaItem.ClippingConfiguration.Builder().setStartPositionMs(c.inMs).setEndPositionMs(c.outMs).build()
             ).build()
-            EditedMediaItem.Builder(mi)
-                .setEffects(Effects(emptyList<AudioProcessor>(), listOf<Effect>(fit)))
-                .build()
+            vItems.add(
+                EditedMediaItem.Builder(mi)
+                    .setRemoveAudio(true)
+                    .setEffects(Effects(emptyList<AudioProcessor>(), listOf<Effect>(fit)))
+                    .build()
+            )
+            cursor = start + c.durMs
         }
+        if (total > cursor) vItems.add(blackItem(total - cursor))
         val seqs = mutableListOf(EditedMediaItemSequence.Builder(*vItems.toTypedArray()).build())
+
+        // Ton der Hauptclips
+        for (c in p.clips) {
+            if (!hasAudioTrack(c.uri)) continue
+            val dur = minOf(c.durMs, total - c.startMs)
+            if (dur < 100) continue
+            val mi = MediaItem.Builder().setUri(c.uri).setClippingConfiguration(
+                MediaItem.ClippingConfiguration.Builder().setStartPositionMs(c.inMs).setEndPositionMs(c.inMs + dur).build()
+            ).build()
+            val item = EditedMediaItem.Builder(mi).setRemoveVideo(true).build()
+            val b = EditedMediaItemSequence.Builder()
+            if (c.startMs > 0) b.addGap(c.startMs * 1000)
+            b.addItem(item)
+            seqs.add(b.build())
+        }
 
         for (a in p.audios) {
             val dur = minOf(a.durMs, total - a.startMs)
@@ -150,6 +188,14 @@ class Exporter(private val ctx: Context, private val images: ImageCache) {
                 handler.postDelayed(this, 300)
             }
         })
+    }
+
+    private fun hasAudioTrack(uri: String): Boolean {
+        val r = MediaMetadataRetriever()
+        return try {
+            r.setDataSource(ctx, Uri.parse(uri))
+            r.extractMetadata(MediaMetadataRetriever.METADATA_KEY_HAS_AUDIO) == "yes"
+        } catch (e: Exception) { false } finally { r.release() }
     }
 
     fun cancel() {

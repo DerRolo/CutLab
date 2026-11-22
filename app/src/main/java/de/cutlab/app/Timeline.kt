@@ -8,7 +8,6 @@ import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.calculateZoom
 import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
-import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
@@ -31,6 +30,8 @@ import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
 import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.input.pointer.positionChange
+import androidx.compose.ui.platform.LocalViewConfiguration
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.IntOffset
@@ -62,26 +63,21 @@ private fun colorFor(kind: Kind, lane: Int): Color = when (kind) {
     Kind.AUDIO -> Color(0xFFD64F86)
 }
 
-/** Reihenfolge von oben nach unten wie bei DaVinci: hoehere Videospuren oben, Video 1 (Hauptspur) darunter, Ton ganz unten. */
+/** Nur benutzte Spuren werden gezeigt (Video 1 immer). Hoehere Videospuren oben, Ton ganz unten. */
 private fun buildRows(p: Project): List<RowSpec> {
     val rows = ArrayList<RowSpec>()
-    val v = p.videos.maxOfOrNull { it.track } ?: -1
-    for (l in minOf(v + 1, MAX_LANE) downTo 0) rows.add(RowSpec(Kind.VIDEO, l, "Video ${l + 2}", colorFor(Kind.VIDEO, l)))
+    p.videos.map { it.track }.distinct().sortedDescending().forEach { rows.add(RowSpec(Kind.VIDEO, it, "Video ${it + 2}", colorFor(Kind.VIDEO, it))) }
     rows.add(RowSpec(Kind.CLIP, 0, "Video 1", colorFor(Kind.CLIP, 0)))
-    rows.add(RowSpec(Kind.SUB, 0, "Untertitel", colorFor(Kind.SUB, 0)))
-    val t = p.texts.maxOfOrNull { it.lane } ?: -1
-    for (l in minOf(t + 1, MAX_LANE) downTo 0) rows.add(RowSpec(Kind.TEXT, l, "Text ${l + 1}", colorFor(Kind.TEXT, l)))
-    val i = p.images.maxOfOrNull { it.lane } ?: -1
-    for (l in minOf(i + 1, MAX_LANE) downTo 0) rows.add(RowSpec(Kind.IMAGE, l, "Bild ${l + 1}", colorFor(Kind.IMAGE, l)))
-    val a = p.audios.maxOfOrNull { it.lane } ?: -1
-    for (l in 0..minOf(a + 1, MAX_LANE)) rows.add(RowSpec(Kind.AUDIO, l, "Ton ${l + 1}", colorFor(Kind.AUDIO, l)))
+    if (p.subs.isNotEmpty()) rows.add(RowSpec(Kind.SUB, 0, "Untertitel", colorFor(Kind.SUB, 0)))
+    p.texts.map { it.lane }.distinct().sortedDescending().forEach { rows.add(RowSpec(Kind.TEXT, it, "Text ${it + 1}", colorFor(Kind.TEXT, it))) }
+    p.images.map { it.lane }.distinct().sortedDescending().forEach { rows.add(RowSpec(Kind.IMAGE, it, "Bild ${it + 1}", colorFor(Kind.IMAGE, it))) }
+    p.audios.map { it.lane }.distinct().sorted().forEach { rows.add(RowSpec(Kind.AUDIO, it, "Ton ${it + 1}", colorFor(Kind.AUDIO, it))) }
     return rows
 }
 
 private fun buildItems(p: Project): List<TItem> {
     val out = ArrayList<TItem>()
-    var acc = 0L
-    p.clips.forEachIndexed { i, c -> out.add(TItem(c.id, Kind.CLIP, 0, acc, c.durMs, "Clip ${i + 1}", c.uri, c.inMs)); acc += c.durMs }
+    p.clips.sortedBy { it.startMs }.forEachIndexed { i, c -> out.add(TItem(c.id, Kind.CLIP, 0, c.startMs, c.durMs, "Clip ${i + 1}", c.uri, c.inMs)) }
     p.videos.forEach { out.add(TItem(it.id, Kind.VIDEO, it.track, it.startMs, it.durMs, "Overlay", it.uri, it.inMs)) }
     p.subs.forEach { out.add(TItem(it.id, Kind.SUB, 0, it.startMs, it.endMs - it.startMs, it.text)) }
     p.texts.forEach { out.add(TItem(it.id, Kind.TEXT, it.lane, it.startMs, it.durMs, it.text)) }
@@ -102,7 +98,7 @@ fun Timeline(vm: EditorViewModel, modifier: Modifier = Modifier, onEdit: (Select
 
     ScrollSync(vm, scroll, pxPerMs)
 
-    val rows = remember(p.videos, p.texts, p.images, p.audios) { buildRows(p) }
+    val rows = remember(p.videos, p.texts, p.images, p.audios, p.subs) { buildRows(p) }
     val items = remember(p) { buildItems(p) }
     val rowIndex = remember(rows) { rows.withIndex().associate { (it.value.kind to it.value.lane) to it.index } }
 
@@ -175,6 +171,14 @@ fun Timeline(vm: EditorViewModel, modifier: Modifier = Modifier, onEdit: (Select
                         drawLine(Color(0xFFFFEB3B), Offset(x, 0f), Offset(x, size.height), 3f)
                     }
                 }
+                // Zeitanzeige beim Verschieben/Kuerzen
+                vm.dragInfo?.let { info ->
+                    Text(
+                        info, color = Color.White, fontSize = 12.sp,
+                        modifier = Modifier.align(Alignment.TopCenter).padding(top = RULER)
+                            .background(Color(0xE6000000), RoundedCornerShape(10.dp)).padding(horizontal = 10.dp, vertical = 4.dp)
+                    )
+                }
                 // feststehender Playhead in der Mitte
                 Box(Modifier.align(Alignment.TopCenter).width(2.dp).fillMaxHeight().background(Color.White))
                 // Bearbeiten / Loeschen fuer das ausgewaehlte Element
@@ -235,12 +239,10 @@ private fun ItemBox(
     val px by rememberUpdatedState(pxPerMs)
     val itemNow by rememberUpdatedState(item)
     val stridePx by rememberUpdatedState(with(LocalDensity.current) { STRIDE.toPx() })
-    val dragging = item.kind == Kind.CLIP && vm.dragClipId == item.id
-    val dragDp = if (dragging) vm.dragClipMs * dpPerMs else 0f
     Box(
         Modifier
-            .zIndex(if (dragging) 2f else if (sel) 1f else 0f)
-            .offset(x = half + (item.startMs * dpPerMs + dragDp).dp, y = rowY)
+            .zIndex(if (sel) 1f else 0f)
+            .offset(x = half + (item.startMs * dpPerMs).dp, y = rowY)
             .width((item.durMs * dpPerMs).dp.coerceAtLeast(12.dp))
             .height(ROW)
             .clip(shape)
@@ -252,7 +254,7 @@ private fun ItemBox(
                     onDragStart = {
                         vm.select(Selection(itemNow.kind, itemNow.id))
                         vm.beginDrag()
-                        if (itemNow.kind != Kind.CLIP) vm.beginFine(itemNow.startMs)     // Lange gedrueckt = Feinmodus
+                        vm.beginFine(itemNow.startMs)     // Lange gedrueckt = Feinmodus
                     },
                     onDragEnd = { vm.endDrag() },
                     onDragCancel = { vm.endDrag() },
@@ -283,20 +285,36 @@ private fun BoxScope.Handle(align: Alignment, pxPerMs: Float, vm: EditorViewMode
     val px by rememberUpdatedState(pxPerMs)
     val cb by rememberUpdatedState(onDeltaMs)
     val edge by rememberUpdatedState(edgeMs)
+    val slop = LocalViewConfiguration.current.touchSlop
     Box(
-        Modifier.align(align).width(18.dp).fillMaxHeight().background(Color.White.copy(alpha = 0.9f)),
+        Modifier.align(align).width(24.dp).fillMaxHeight().background(Color.White.copy(alpha = 0.9f)),
         contentAlignment = Alignment.Center
     ) {
-        Text(if (align == Alignment.CenterStart) "\u2039" else "\u203A", color = Color(0xFF202020), fontSize = 18.sp)
+        Text(if (align == Alignment.CenterStart) "\u2039" else "\u203A", color = Color(0xFF202020), fontSize = 20.sp)
         Box(
-            Modifier.matchParentSize()
-                .pointerInput(Unit) {
-                    detectHorizontalDragGestures(
-                        onDragStart = { vm.beginDrag(); vm.beginFine(edge()) },     // Anfassen = Feinmodus (zoomt heran)
-                        onDragEnd = { vm.endDrag() },
-                        onDragCancel = { vm.endDrag() }
-                    ) { ch, dx -> ch.consume(); cb(dx / px) }
+            Modifier.matchParentSize().pointerInput(Unit) {
+                awaitEachGesture {
+                    val down = awaitFirstDown(requireUnconsumed = false)
+                    down.consume()                       // sofort beanspruchen, damit Scrollen nicht dazwischenfunkt
+                    var started = false
+                    var acc = 0f
+                    while (true) {
+                        val ev = awaitPointerEvent()
+                        val ch = ev.changes.firstOrNull { it.id == down.id } ?: break
+                        if (!ch.pressed) break
+                        val dx = ch.positionChange().x
+                        if (!started) {
+                            acc += dx
+                            if (kotlin.math.abs(acc) > slop) {
+                                started = true
+                                vm.beginDrag(); vm.beginFine(edge())      // Anfassen = Feinmodus (zoomt heran)
+                            }
+                        } else if (dx != 0f) cb(dx / px)
+                        ch.consume()
+                    }
+                    if (started) vm.endDrag()
                 }
+            }
         )
     }
 }

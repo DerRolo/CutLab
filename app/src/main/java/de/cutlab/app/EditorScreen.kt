@@ -257,7 +257,7 @@ private fun PreviewArea(vm: EditorViewModel, modifier: Modifier, onEdit: (Select
     val penPainter = rememberVectorPainter(Icons.Default.Edit)
     val trashPainter = rememberVectorPainter(Icons.Default.Delete)
     Box(modifier.fillMaxWidth().background(Color.Black), contentAlignment = Alignment.Center) {
-        if (p.clips.isEmpty()) {
+        if (p.isEmpty) {
             Text("Tippe unten auf \"Video\", um zu starten", color = Color.Gray, textAlign = TextAlign.Center)
         } else {
             val touchSlop = LocalViewConfiguration.current.touchSlop
@@ -322,6 +322,7 @@ private fun PreviewArea(vm: EditorViewModel, modifier: Modifier, onEdit: (Select
                         },
                         modifier = Modifier.fillMaxSize()
                     )
+                    GapCover(vm)
                     OverlayVideos(vm)
                     Canvas(Modifier.fillMaxSize()) {
                         drawIntoCanvas { vm.painter.draw(it.nativeCanvas, size.width.toInt(), size.height.toInt(), vm.posMs, vm.project) }
@@ -441,7 +442,7 @@ private fun SelectionPanel(vm: EditorViewModel, onEditText: () -> Unit, onPreset
                     }
                 }
                 Kind.CLIP, Kind.AUDIO -> Text(
-                    "Ränder ziehen = kürzen  |  lange drücken und ziehen = verschieben",
+                    "Anfang/Ende ziehen = kürzen  |  lange drücken und ziehen = verschieben (auch nach oben/unten in eine andere Spur)",
                     color = Color.Gray, fontSize = 11.sp, modifier = Modifier.padding(vertical = 6.dp)
                 )
             }
@@ -508,4 +509,12 @@ private fun OverlayVideos(vm: EditorViewModel) {
             )
         }
     }
+}
+
+/** Schwarz, solange auf der Hauptspur kein Clip liegt (Luecken, Texte ohne Video). */
+@Composable
+private fun GapCover(vm: EditorViewModel) {
+    val pos = vm.posMs
+    val covered = vm.project.clips.any { pos >= it.startMs && pos < it.startMs + it.durMs }
+    if (!covered) Box(Modifier.fillMaxSize().background(Color.Black))
 }

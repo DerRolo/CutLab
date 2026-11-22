@@ -22,6 +22,7 @@ import kotlinx.coroutines.withContext
 import java.io.File
 import kotlin.math.abs
 import java.util.Collections
+import kotlin.math.roundToInt
 import java.util.UUID
 
 private const val MIN = 200L
@@ -63,8 +64,8 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
     private var nextId = 1L
     private var lastLive = 0L
     var snapGuideMs by mutableStateOf<Long?>(null); private set     // gelbe Einrast-Linie in der Timeline
-    var dragClipId by mutableStateOf<Long?>(null); private set      // Hauptspur-Clip, der gerade gezogen wird
-    var dragClipMs by mutableFloatStateOf(0f); private set          // Versatz des gezogenen Clips (Vorschau)
+    var dragInfo by mutableStateOf<String?>(null); private set      // Zeitanzeige beim Ziehen/Kuerzen
+    private var lastDragged: Selection? = null
     private var dragRaw = Float.NaN
     private var laneAcc = 0f
     private var zoomBefore = 0f
@@ -88,14 +89,20 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
             }
         }
         viewModelScope.launch {
+            var last = SystemClock.uptimeMillis()
             while (true) {
                 delay(30)
-                val isPlaying = engine.player.isPlaying
-                playing = isPlaying
-                if (isPlaying) posMs = engine.pos(project.clips).coerceAtMost(project.totalMs)
-                else if (engine.player.playbackState == androidx.media3.common.Player.STATE_ENDED) posMs = project.totalMs
-                engine.syncAudio(project.audios, isPlaying, posMs)
-                engine.syncVideos(project.videos, isPlaying, posMs)
+                val now = SystemClock.uptimeMillis()
+                val dt = now - last
+                last = now
+                if (playing) {
+                    posMs += dt
+                    val tot = project.totalMs
+                    if (posMs >= tot) { posMs = tot; playing = false }
+                }
+                engine.sync(posMs, playing)
+                engine.syncAudio(project.audios, playing, posMs)
+                engine.syncVideos(project.videos, playing, posMs)
             }
         }
     }
@@ -117,8 +124,12 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
 
     // ---------- Wiedergabe ----------
     fun select(s: Selection?) { selection = s }
-    fun seekTo(ms: Long) { val t = ms.coerceIn(0L, project.totalMs); posMs = t; engine.seek(project.clips, t) }
-    fun togglePlay() = engine.toggle(project.clips, project.totalMs)
+    fun seekTo(ms: Long) { posMs = ms.coerceIn(0L, project.totalMs) }
+    fun togglePlay() {
+        val total = project.totalMs
+        if (total <= 0L) return
+        if (playing) playing = false else { if (posMs >= total) posMs = 0L; playing = true }
+    }
     fun onPreviewTap() {
         val k = selection?.kind
         if (k == Kind.TEXT || k == Kind.IMAGE || k == Kind.SUB || k == Kind.VIDEO) selection = null else togglePlay()
@@ -201,7 +212,7 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
     private fun saveNow() { try { ProjectStore.save(getApplication(), currentId, project) } catch (_: Exception) {} }
 
     private fun switchTo(id: String) {
-        engine.player.pause()
+        playing = false
         currentId = id
         ProjectStore.setLast(getApplication(), id)
         applyLoaded(ProjectStore.load(getApplication(), id) ?: Project())
@@ -257,19 +268,18 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
                 val m = metas.first()
                 p = p.copy(aspect = if (m.h > m.w) AspectPreset.PORTRAIT else if (m.w > m.h) AspectPreset.LANDSCAPE else AspectPreset.SQUARE)
             }
-            for (m in metas) p = p.copy(clips = p.clips + Clip(nid(), m.uri, m.dur, 0, m.dur))
+            var cursor = p.clips.maxOfOrNull { it.startMs + it.durMs } ?: 0L
+            for (m in metas) {
+                p = p.copy(clips = p.clips + Clip(nid(), m.uri, m.dur, 0, m.dur, cursor, m.w.coerceAtLeast(1).toFloat() / m.h.coerceAtLeast(1), m.hasAudio))
+                cursor += m.dur
+            }
             set(p, true)
         }
     }
 
-    private fun slot(): Pair<Long, Long> {
-        val total = project.totalMs
-        val d = minOf(3000L, total).coerceAtLeast(MIN)
-        return posMs.coerceAtMost((total - d).coerceAtLeast(0L)) to d
-    }
+    private fun slot(): Pair<Long, Long> = posMs to 3000L
 
     fun addText(): Long? {
-        if (project.clips.isEmpty()) { message = "Zuerst ein Video hinzufuegen."; return null }
         snap()
         val (s, d) = slot()
         val id = nid()
@@ -279,7 +289,6 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun addImage(uri: Uri) {
-        if (project.clips.isEmpty()) { message = "Zuerst ein Video hinzufuegen."; return }
         viewModelScope.launch {
             val local = withContext(Dispatchers.IO) { importFile(uri, "jpg")?.also { images.get(it) } }
             if (local == null) { message = "Bild konnte nicht gelesen werden."; return@launch }
@@ -292,7 +301,6 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun addAudio(uri: Uri) {
-        if (project.clips.isEmpty()) { message = "Zuerst ein Video hinzufuegen."; return }
         viewModelScope.launch {
             val name = withContext(Dispatchers.IO) { nameOf(uri) }
             val meta = withContext(Dispatchers.IO) {
@@ -300,8 +308,8 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
             }
             if (meta == null) { message = "Audio konnte nicht gelesen werden."; return@launch }
             val total = project.totalMs
-            val start = posMs.coerceAtMost(total - MIN)
-            val dur = minOf(meta.dur, total - start)
+            val start = posMs
+            val dur = if (total > start + MIN) minOf(meta.dur, total - start) else meta.dur
             snap()
             val id = nid()
             set(project.copy(audios = project.audios + AudioItem(id, meta.uri, name, meta.dur, start, 0, dur, lane = freeLane(project.audios.map { Triple(it.lane, it.startMs, it.startMs + it.durMs) }, start, start + dur))))
@@ -311,16 +319,14 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
 
     /** Zusaetzliches Video auf einer Overlay-Spur (Bild-in-Bild / Ueberblenden). */
     fun addOverlayVideo(uri: Uri) {
-        if (project.clips.isEmpty()) { message = "Zuerst ein Video hinzufuegen."; return }
         viewModelScope.launch {
             busy = "Video wird importiert ..."; busyProgress = -1f
             val meta = try {
                 withContext(Dispatchers.IO) { importFile(uri, "mp4")?.let { probe(Uri.parse(it)) } }
             } finally { busy = null }
             if (meta == null || meta.w <= 0 || meta.h <= 0) { message = "Video konnte nicht gelesen werden."; return@launch }
-            val total = project.totalMs
-            val start = posMs.coerceAtMost((total - MIN).coerceAtLeast(0L))
-            val dur = minOf(meta.dur, total - start).coerceAtLeast(MIN)
+            val start = posMs
+            val dur = meta.dur
             val lane = freeLane(project.videos.map { Triple(it.track, it.startMs, it.startMs + it.durMs) }, start, start + dur)
             snap()
             val id = nid()
@@ -336,21 +342,15 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
 
     // ---------- Schneiden / Loeschen / Text ----------
     fun split() {
-        var acc = 0L
         val cs = project.clips
-        for ((i, c) in cs.withIndex()) {
-            if (posMs > acc + 250 && posMs < acc + c.durMs - 250) {
-                snap()
-                val cut = c.inMs + (posMs - acc)
-                val l = c.copy(outMs = cut)
-                val r = c.copy(id = nid(), inMs = cut)
-                set(project.copy(clips = cs.take(i) + l + r + cs.drop(i + 1)), true)
-                selection = Selection(Kind.CLIP, r.id)
-                return
-            }
-            acc += c.durMs
-        }
-        message = "Playhead an die Stelle setzen, an der geschnitten werden soll."
+        val c = cs.firstOrNull { posMs > it.startMs + 250 && posMs < it.startMs + it.durMs - 250 }
+        if (c == null) { message = "Playhead an die Stelle setzen, an der geschnitten werden soll."; return }
+        snap()
+        val cut = c.inMs + (posMs - c.startMs)
+        val l = c.copy(outMs = cut)
+        val r = c.copy(id = nid(), inMs = cut, startMs = posMs)
+        set(project.copy(clips = cs.map { if (it.id == c.id) l else it } + r), true)
+        selection = Selection(Kind.CLIP, r.id)
     }
 
     fun deleteSelected() {
@@ -457,7 +457,7 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
     fun setSubHighlight(c: Int) = live { p -> p.copy(subStyle = p.subStyle.copy(highlight = c)) }
 
     // ---------- Timeline-Drags ----------
-    fun beginDrag() { snap(); dragRaw = Float.NaN; laneAcc = 0f; dragClipId = null; dragClipMs = 0f; snapGuideMs = null }
+    fun beginDrag() { snap(); dragRaw = Float.NaN; laneAcc = 0f; snapGuideMs = null; lastDragged = null; dragInfo = null }
 
     /** Feinmodus: beim Verschieben/Kuerzen zoomt die Timeline heran und springt an die Kante (Anzeige im Vorschaubild). */
     fun beginFine(edgeMs: Long) {
@@ -469,43 +469,75 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
     private fun endFine() { if (zoomBefore != 0f) { zoom = zoomBefore; zoomBefore = 0f } }
 
     // ---------- Spuren (Lanes) ----------
+    // Video: 0 = Video 1 (Hauptspur), 1.. = Overlay-Spuren (Video 2, 3, ...). Text/Bild/Ton: 0.. = Text 1, Text 2, ...
     private fun laneOf(k: Kind, id: Long): Int? = when (k) {
+        Kind.CLIP -> if (project.clips.any { it.id == id }) 0 else null
+        Kind.VIDEO -> project.videos.find { it.id == id }?.track?.plus(1)
         Kind.TEXT -> project.texts.find { it.id == id }?.lane
         Kind.IMAGE -> project.images.find { it.id == id }?.lane
         Kind.AUDIO -> project.audios.find { it.id == id }?.lane
-        Kind.VIDEO -> project.videos.find { it.id == id }?.track
-        else -> null
+        Kind.SUB -> null
     }
 
-    private fun maxLaneOf(k: Kind): Int = (when (k) {
-        Kind.TEXT -> project.texts.maxOfOrNull { it.lane }
-        Kind.IMAGE -> project.images.maxOfOrNull { it.lane }
-        Kind.AUDIO -> project.audios.maxOfOrNull { it.lane }
-        Kind.VIDEO -> project.videos.maxOfOrNull { it.track }
-        else -> null
-    }) ?: 0
+    /** Hoechste Spur, auf der andere Elemente liegen (so entsteht pro Zug hoechstens EINE neue Spur). */
+    private fun maxLaneOthers(k: Kind, id: Long): Int {
+        val p = project
+        val lanes: List<Int> = when (k) {
+            Kind.CLIP, Kind.VIDEO -> p.videos.filter { it.id != id }.map { it.track + 1 }
+            Kind.TEXT -> p.texts.filter { it.id != id }.map { it.lane }
+            Kind.IMAGE -> p.images.filter { it.id != id }.map { it.lane }
+            Kind.AUDIO -> p.audios.filter { it.id != id }.map { it.lane }
+            Kind.SUB -> emptyList()
+        }
+        val base = if (k == Kind.CLIP || k == Kind.VIDEO) 0 else -1      // Video 1 gibt es immer
+        return maxOf(base, lanes.maxOrNull() ?: base)
+    }
 
     private fun setLane(k: Kind, id: Long, l: Int) {
         val p = project
-        project = when (k) {
-            Kind.TEXT -> p.copy(texts = p.texts.map { if (it.id == id) it.copy(lane = l) else it })
-            Kind.IMAGE -> p.copy(images = p.images.map { if (it.id == id) it.copy(lane = l) else it })
-            Kind.AUDIO -> p.copy(audios = p.audios.map { if (it.id == id) it.copy(lane = l) else it })
-            Kind.VIDEO -> p.copy(videos = p.videos.map { if (it.id == id) it.copy(track = l) else it })
-            else -> p
+        when (k) {
+            Kind.CLIP -> if (l >= 1) {
+                // Hauptspur-Clip nach oben gezogen -> wird zu einem Overlay-Video (passend eingepasst)
+                val c = p.clips.find { it.id == id } ?: return
+                val fit = if (c.aspect >= p.aspect.ratio) 1f else c.aspect / p.aspect.ratio
+                project = p.copy(
+                    clips = p.clips.filter { it.id != id },
+                    videos = p.videos + VideoItem(id, c.uri, c.srcDurMs, c.aspect, c.startMs, c.inMs, c.durMs, scale = fit, track = l - 1, hasAudio = c.hasAudio)
+                )
+                selection = Selection(Kind.VIDEO, id)
+                engine.setClips(project.clips, posMs)
+            }
+            Kind.VIDEO -> if (l == 0) {
+                // Overlay-Video nach unten auf Video 1 gezogen -> wird wieder ein Hauptspur-Clip
+                val v = p.videos.find { it.id == id } ?: return
+                project = p.copy(
+                    videos = p.videos.filter { it.id != id },
+                    clips = p.clips + Clip(id, v.uri, v.srcDurMs, v.inMs, v.inMs + v.durMs, v.startMs, v.aspect, v.hasAudio)
+                )
+                selection = Selection(Kind.CLIP, id)
+                engine.setClips(project.clips, posMs)
+            } else {
+                project = p.copy(videos = p.videos.map { if (it.id == id) it.copy(track = l - 1) else it })
+            }
+            Kind.TEXT -> project = p.copy(texts = p.texts.map { if (it.id == id) it.copy(lane = l) else it })
+            Kind.IMAGE -> project = p.copy(images = p.images.map { if (it.id == id) it.copy(lane = l) else it })
+            Kind.AUDIO -> project = p.copy(audios = p.audios.map { if (it.id == id) it.copy(lane = l) else it })
+            Kind.SUB -> {}
         }
     }
 
     /** Senkrechtes Ziehen wechselt die Spur (Video/Text/Bild: nach oben = hoehere Spur, Ton: nach unten). */
     fun dragLane(k: Kind, id: Long, dyPx: Float, stridePx: Float) {
-        if (k == Kind.CLIP || k == Kind.SUB || stridePx <= 0f) return
+        if (k == Kind.SUB || stridePx <= 0f) return
         laneAcc += dyPx
-        val steps = (laneAcc / stridePx).toInt()
+        val steps = (laneAcc / stridePx).roundToInt()
         if (steps == 0) return
         laneAcc -= steps * stridePx
         val cur = laneOf(k, id) ?: return
+        lastDragged = Selection(k, id)
         val delta = if (k == Kind.AUDIO) steps else -steps
-        setLane(k, id, (cur + delta).coerceIn(0, minOf(maxLaneOf(k) + 1, 5)))
+        val nl = (cur + delta).coerceIn(0, minOf(maxLaneOthers(k, id) + 1, 6))
+        if (nl != cur) setLane(k, id, nl)
     }
 
     /** Niedrigste Spur, auf der im Zeitraum noch nichts liegt. */
@@ -514,63 +546,119 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
         return 5
     }
 
+    /** Leere Spuren zwischendurch entfernen (Overlay-Spuren zaehlen ab 0, Video 1 bleibt immer). */
+    private fun compactLanes() {
+        val p = project
+        fun map(lanes: List<Int>): Map<Int, Int> = lanes.distinct().sorted().withIndex().associate { it.value to it.index }
+        val tm = map(p.texts.map { it.lane })
+        val im = map(p.images.map { it.lane })
+        val am = map(p.audios.map { it.lane })
+        val vmap = map(p.videos.map { it.track })
+        project = p.copy(
+            texts = p.texts.map { it.copy(lane = tm[it.lane] ?: 0) },
+            images = p.images.map { it.copy(lane = im[it.lane] ?: 0) },
+            audios = p.audios.map { it.copy(lane = am[it.lane] ?: 0) },
+            videos = p.videos.map { it.copy(track = vmap[it.track] ?: 0) }
+        )
+    }
+
+    // ---------- Ueberschreiben (Videos auf derselben Spur) ----------
+    private fun pieces(s: Long, e: Long, a: Long, b: Long): List<Pair<Long, Long>> {
+        if (b <= s || a >= e) return listOf(s to e)
+        val out = ArrayList<Pair<Long, Long>>()
+        if (a > s) out.add(s to a)
+        if (b < e) out.add(b to e)
+        return out
+    }
+
+    /** Wird ein Video ueber ein anderes gelegt, wird das darunter an dieser Stelle gekappt (oder geteilt/entfernt). */
+    private fun overwrite(k: Kind, id: Long) {
+        val p = project
+        if (k == Kind.CLIP) {
+            val me = p.clips.find { it.id == id } ?: return
+            val a = me.startMs
+            val b = me.startMs + me.durMs
+            val out = ArrayList<Clip>()
+            for (c in p.clips) {
+                if (c.id == id) { out.add(c); continue }
+                val s0 = c.startMs
+                var first = true
+                for ((ps, pe) in pieces(s0, s0 + c.durMs, a, b)) {
+                    if (pe - ps < 100) continue
+                    val nc = c.copy(startMs = ps, inMs = c.inMs + (ps - s0), outMs = c.inMs + (pe - s0))
+                    out.add(if (first) nc else nc.copy(id = nid()))
+                    first = false
+                }
+            }
+            project = p.copy(clips = out)
+        } else if (k == Kind.VIDEO) {
+            val me = p.videos.find { it.id == id } ?: return
+            val a = me.startMs
+            val b = me.startMs + me.durMs
+            val out = ArrayList<VideoItem>()
+            for (v in p.videos) {
+                if (v.id == id || v.track != me.track) { out.add(v); continue }
+                val s0 = v.startMs
+                var first = true
+                for ((ps, pe) in pieces(s0, s0 + v.durMs, a, b)) {
+                    if (pe - ps < 100) continue
+                    val nv = v.copy(startMs = ps, inMs = v.inMs + (ps - s0), durMs = pe - ps)
+                    out.add(if (first) nv else nv.copy(id = nid()))
+                    first = false
+                }
+            }
+            project = p.copy(videos = out)
+        }
+    }
+
     fun endDrag() {
         endFine()
-        snapGuideMs = null; dragRaw = Float.NaN
-        val cid = dragClipId
-        if (cid != null) {
-            // Clip dort einsetzen, wo seine Mitte nach dem Loslassen liegt
-            val l = project.clips.toMutableList()
-            val i = l.indexOfFirst { it.id == cid }
-            if (i >= 0) {
-                var start = 0L
-                for (k in 0 until i) start += l[k].durMs
-                val center = start + l[i].durMs / 2f + dragClipMs
-                val moved = l.removeAt(i)
-                var ni = 0
-                var acc = 0L
-                for (c in l) { if (center > acc + c.durMs / 2f) ni++; acc += c.durMs }
-                l.add(ni, moved)
-                project = project.copy(clips = l)
+        snapGuideMs = null; dragRaw = Float.NaN; dragInfo = null
+        lastDragged?.let { ld ->
+            val kindNow = when {
+                project.clips.any { it.id == ld.id } -> Kind.CLIP
+                project.videos.any { it.id == ld.id } -> Kind.VIDEO
+                else -> ld.kind
             }
-            dragClipId = null; dragClipMs = 0f
+            overwrite(kindNow, ld.id)
         }
+        lastDragged = null
+        compactLanes()
         engine.setClips(project.clips, posMs)
         posMs = posMs.coerceAtMost(project.totalMs)
     }
 
     // ---------- Einrasten (Docking) ----------
     private fun startOf(k: Kind, id: Long): Long? = when (k) {
+        Kind.CLIP -> project.clips.find { it.id == id }?.startMs
         Kind.TEXT -> project.texts.find { it.id == id }?.startMs
         Kind.IMAGE -> project.images.find { it.id == id }?.startMs
         Kind.AUDIO -> project.audios.find { it.id == id }?.startMs
         Kind.VIDEO -> project.videos.find { it.id == id }?.startMs
         Kind.SUB -> project.subs.find { it.id == id }?.startMs
-        Kind.CLIP -> null
     }
 
     private fun durOf(k: Kind, id: Long): Long? = when (k) {
+        Kind.CLIP -> project.clips.find { it.id == id }?.durMs
         Kind.TEXT -> project.texts.find { it.id == id }?.durMs
         Kind.IMAGE -> project.images.find { it.id == id }?.durMs
         Kind.AUDIO -> project.audios.find { it.id == id }?.durMs
         Kind.VIDEO -> project.videos.find { it.id == id }?.durMs
         Kind.SUB -> project.subs.find { it.id == id }?.let { it.endMs - it.startMs }
-        Kind.CLIP -> null
     }
 
-    /** Punkte, an denen Elemente einrasten: Anfang, Ende, Playhead, Clip-Grenzen und Kanten der Nachbarn. */
+    /** Punkte, an denen Elemente einrasten: Anfang, Playhead, Clip-Grenzen und Kanten der Nachbarn auf derselben Spur. */
     private fun snapPoints(k: Kind, id: Long): List<Long> {
         val p = project
         val lane = laneOf(k, id) ?: 0
         val pts = ArrayList<Long>()
-        pts.add(0L); pts.add(posMs); pts.add(p.totalMs)
-        var acc = 0L
-        p.clips.forEach { acc += it.durMs; pts.add(acc) }
+        pts.add(0L); pts.add(posMs)
+        p.clips.filter { it.id != id }.forEach { pts.add(it.startMs); pts.add(it.startMs + it.durMs) }
         when (k) {
             Kind.TEXT -> p.texts.filter { it.id != id && it.lane == lane }.forEach { pts.add(it.startMs); pts.add(it.startMs + it.durMs) }
             Kind.IMAGE -> p.images.filter { it.id != id && it.lane == lane }.forEach { pts.add(it.startMs); pts.add(it.startMs + it.durMs) }
             Kind.AUDIO -> p.audios.filter { it.id != id && it.lane == lane }.forEach { pts.add(it.startMs); pts.add(it.startMs + it.durMs) }
-            Kind.VIDEO -> p.videos.filter { it.id != id && it.track == lane }.forEach { pts.add(it.startMs); pts.add(it.startMs + it.durMs) }
+            Kind.VIDEO -> p.videos.filter { it.id != id && it.track + 1 == lane }.forEach { pts.add(it.startMs); pts.add(it.startMs + it.durMs) }
             Kind.SUB -> p.subs.filter { it.id != id }.forEach { pts.add(it.startMs); pts.add(it.endMs) }
             Kind.CLIP -> {}
         }
@@ -594,43 +682,50 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
         return if (bd <= snapThreshold()) { snapGuideMs = best; best } else { snapGuideMs = null; edge }
     }
 
+    /** Verschieben: rastet schon waehrend des Ziehens ein (gelbe Linie) und zeigt Start/Ende an. */
     fun moveItem(k: Kind, id: Long, d: Float) {
-        if (k == Kind.CLIP) { dragClipId = id; dragClipMs += d; return }
         val cur = startOf(k, id) ?: return
         val dur = durOf(k, id) ?: return
-        val total = project.totalMs
+        lastDragged = Selection(k, id)
         if (dragRaw.isNaN()) dragRaw = cur.toFloat()
         dragRaw += d
-        val raw = dragRaw.toLong().coerceIn(0L, maxOf(0L, total - dur))
-        val ns = snapSpan(raw, dur, snapPoints(k, id)).coerceIn(0L, maxOf(0L, total - dur))
+        if (dragRaw < 0f) dragRaw = 0f
+        val ns = snapSpan(dragRaw.toLong(), dur, snapPoints(k, id)).coerceAtLeast(0L)
         moveByDelta(k, id, (ns - cur).toFloat())
+        dragInfo = "Start ${fmtTime(ns)}  \u00B7  Ende ${fmtTime(ns + dur)}"
     }
 
     fun trimStart(k: Kind, id: Long, d: Float) {
-        val cur = startOf(k, id)
-        if (k == Kind.CLIP || cur == null) { trimStartRaw(k, id, d); return }
+        val cur = startOf(k, id) ?: return
+        lastDragged = Selection(k, id)
         if (dragRaw.isNaN()) dragRaw = cur.toFloat()
         dragRaw += d
+        if (dragRaw < 0f) dragRaw = 0f
         val edge = snapEdge(dragRaw.toLong(), snapPoints(k, id))
         trimStartRaw(k, id, (edge - cur).toFloat())
+        val now = startOf(k, id) ?: return
+        if (now != edge) dragRaw = now.toFloat()           // an Grenze gestoppt: Rohwert folgt der Realitaet
+        dragInfo = "Start ${fmtTime(now)}"
     }
 
     fun trimEnd(k: Kind, id: Long, d: Float) {
-        val cur = startOf(k, id)
-        val dur = durOf(k, id)
-        if (k == Kind.CLIP || cur == null || dur == null) { trimEndRaw(k, id, d); return }
+        val cur = startOf(k, id) ?: return
+        val dur = durOf(k, id) ?: return
+        lastDragged = Selection(k, id)
         if (dragRaw.isNaN()) dragRaw = (cur + dur).toFloat()
         dragRaw += d
-        val edge = snapEdge(dragRaw.toLong(), snapPoints(k, id))
+        val edge = snapEdge(dragRaw.toLong().coerceAtLeast(0L), snapPoints(k, id))
         trimEndRaw(k, id, (edge - (cur + dur)).toFloat())
+        val end = (startOf(k, id) ?: return) + (durOf(k, id) ?: return)
+        if (end != edge) dragRaw = end.toFloat()
+        dragInfo = "Ende ${fmtTime(end)}"
     }
 
     private fun moveByDelta(k: Kind, id: Long, d: Float) {
         val p = project
-        val total = p.totalMs
-        fun cs(s: Long, dur: Long) = (s + d.toLong()).coerceIn(0L, maxOf(0L, total - dur))
+        fun cs(s: Long, @Suppress("UNUSED_PARAMETER") dur: Long) = (s + d.toLong()).coerceAtLeast(0L)
         project = when (k) {
-            Kind.CLIP -> p
+            Kind.CLIP -> p.copy(clips = p.clips.map { if (it.id == id) it.copy(startMs = cs(it.startMs, it.durMs)) else it })
             Kind.TEXT -> p.copy(texts = p.texts.map { if (it.id == id) it.copy(startMs = cs(it.startMs, it.durMs)) else it })
             Kind.IMAGE -> p.copy(images = p.images.map { if (it.id == id) it.copy(startMs = cs(it.startMs, it.durMs)) else it })
             Kind.AUDIO -> p.copy(audios = p.audios.map { if (it.id == id) it.copy(startMs = cs(it.startMs, it.durMs)) else it })
@@ -651,7 +746,11 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
         val dl = d.toLong()
         project = when (k) {
             Kind.CLIP -> p.copy(clips = p.clips.map {
-                if (it.id == id) it.copy(inMs = (it.inMs + dl).coerceIn(0L, maxOf(0L, it.outMs - MIN))) else it
+                if (it.id == id) {
+                    val lo = maxOf(0L, it.inMs - it.startMs)
+                    val ni = (it.inMs + dl).coerceIn(lo, maxOf(lo, it.outMs - MIN))
+                    it.copy(startMs = it.startMs + (ni - it.inMs), inMs = ni)     // Anfang wandert, der Rest bleibt wo er ist
+                } else it
             })
             Kind.TEXT -> p.copy(texts = p.texts.map {
                 if (it.id == id) { val end = it.startMs + it.durMs; val ns = (it.startMs + dl).coerceIn(0L, end - MIN); it.copy(startMs = ns, durMs = end - ns) } else it
@@ -685,34 +784,33 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
     private fun trimEndRaw(k: Kind, id: Long, d: Float) {
         val p = project
         val dl = d.toLong()
-        val total = p.totalMs
         project = when (k) {
             Kind.CLIP -> p.copy(clips = p.clips.map {
                 if (it.id == id) it.copy(outMs = (it.outMs + dl).coerceIn(it.inMs + MIN, it.srcDurMs)) else it
             })
             Kind.TEXT -> p.copy(texts = p.texts.map {
-                if (it.id == id) { val ne = (it.startMs + it.durMs + dl).coerceIn(it.startMs + MIN, maxOf(it.startMs + MIN, total)); it.copy(durMs = ne - it.startMs) } else it
+                if (it.id == id) { val ne = (it.startMs + it.durMs + dl).coerceAtLeast(it.startMs + MIN); it.copy(durMs = ne - it.startMs) } else it
             })
             Kind.IMAGE -> p.copy(images = p.images.map {
-                if (it.id == id) { val ne = (it.startMs + it.durMs + dl).coerceIn(it.startMs + MIN, maxOf(it.startMs + MIN, total)); it.copy(durMs = ne - it.startMs) } else it
+                if (it.id == id) { val ne = (it.startMs + it.durMs + dl).coerceAtLeast(it.startMs + MIN); it.copy(durMs = ne - it.startMs) } else it
             })
             Kind.VIDEO -> p.copy(videos = p.videos.map {
                 if (it.id == id) {
-                    val hi = minOf(it.startMs + (it.srcDurMs - it.inMs), maxOf(total, it.startMs + MIN))
+                    val hi = it.startMs + (it.srcDurMs - it.inMs)
                     val ne = (it.startMs + it.durMs + dl).coerceIn(it.startMs + MIN, maxOf(it.startMs + MIN, hi))
                     it.copy(durMs = ne - it.startMs)
                 } else it
             })
             Kind.AUDIO -> p.copy(audios = p.audios.map {
                 if (it.id == id) {
-                    val hi = minOf(it.startMs + (it.srcDurMs - it.inMs), maxOf(total, it.startMs + MIN))
+                    val hi = it.startMs + (it.srcDurMs - it.inMs)
                     val ne = (it.startMs + it.durMs + dl).coerceIn(it.startMs + MIN, maxOf(it.startMs + MIN, hi))
                     it.copy(durMs = ne - it.startMs)
                 } else it
             })
             Kind.SUB -> p.copy(subs = p.subs.map {
                 if (it.id == id) {
-                    val ne = (it.endMs + dl).coerceIn(it.startMs + MIN, maxOf(it.startMs + MIN, total))
+                    val ne = (it.endMs + dl).coerceAtLeast(it.startMs + MIN)
                     it.copy(endMs = ne, words = it.words.map { w -> w.copy(startMs = minOf(w.startMs, ne), endMs = minOf(w.endMs, ne)) })
                 } else it
             })
@@ -723,7 +821,7 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
     fun generateSubtitles(engine: AsrEngine, lang: String, hint: String) {
         val clips = project.clips
         if (clips.isEmpty()) { message = "Zuerst ein Video hinzufuegen."; return }
-        this.engine.player.pause()
+        playing = false
         busy = "Untertitel werden erzeugt ..."; busyProgress = -1f
         job = viewModelScope.launch {
             try {
@@ -748,8 +846,8 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
     // ---------- Export ----------
     fun export() {
         val p = project
-        if (p.clips.isEmpty()) { message = "Kein Video im Projekt."; return }
-        engine.player.pause()
+        if (p.isEmpty) { message = "Das Projekt ist leer."; return }
+        playing = false
         busy = "Exportiere Video ..."; busyProgress = 0f
         val ex = Exporter(getApplication(), images)
         exporter = ex

@@ -57,7 +57,10 @@ object ProjectStore {
             put("kind", p.subStyle.kind.name); put("size", p.subStyle.size.toDouble()); put("y", p.subStyle.y.toDouble())
             put("color", p.subStyle.color); put("highlight", p.subStyle.highlight); put("x", p.subStyle.x.toDouble()); put("outline", p.subStyle.outline)
         })
-        put("clips", arr(p.clips) { JSONObject().put("id", it.id).put("uri", it.uri).put("src", it.srcDurMs).put("in", it.inMs).put("out", it.outMs) })
+        put("clips", arr(p.clips) {
+            JSONObject().put("id", it.id).put("uri", it.uri).put("src", it.srcDurMs).put("in", it.inMs).put("out", it.outMs)
+                .put("start", it.startMs).put("aspect", it.aspect.toDouble()).put("hasAudio", it.hasAudio)
+        })
         put("texts", arr(p.texts) {
             JSONObject().put("id", it.id).put("text", it.text).put("s", it.startMs).put("d", it.durMs)
                 .put("x", it.x.toDouble()).put("y", it.y.toDouble()).put("size", it.size.toDouble()).put("color", it.color).put("outline", it.outline).put("lane", it.lane)
@@ -88,7 +91,16 @@ object ProjectStore {
     private fun fromJson(j: JSONObject): Project {
         val st = j.optJSONObject("subStyle")
         return Project(
-            clips = list(j.optJSONArray("clips")) { Clip(it.getLong("id"), it.getString("uri"), it.getLong("src"), it.getLong("in"), it.getLong("out")) },
+            clips = run {
+                var acc = 0L      // alte Projekte ohne Startzeit: Clips hintereinander legen
+                list(j.optJSONArray("clips")) {
+                    val dur = it.getLong("out") - it.getLong("in")
+                    val s = if (it.has("start")) it.getLong("start") else acc
+                    acc = s + dur
+                    Clip(it.getLong("id"), it.getString("uri"), it.getLong("src"), it.getLong("in"), it.getLong("out"),
+                        s, it.optDouble("aspect", 0.5625).toFloat(), it.optBoolean("hasAudio", true))
+                }
+            },
             texts = list(j.optJSONArray("texts")) {
                 TextItem(it.getLong("id"), it.getString("text"), it.getLong("s"), it.getLong("d"),
                     it.getDouble("x").toFloat(), it.getDouble("y").toFloat(), it.getDouble("size").toFloat(), it.getInt("color"), it.optInt("outline", 0xFF000000.toInt()), it.optInt("lane", 0))

@@ -13,13 +13,16 @@ Bei jedem Upload auf GitHub baut sich die App automatisch neu und erscheint als 
 ## Was die App kann
 
 **Schneiden**
-- Mehrere Videos hintereinander legen; zum Umsortieren den Clip lange drücken und ziehen, er folgt dem Finger und rastet beim Loslassen ein
+- Clips liegen frei auf der Zeitleiste: nach rechts schieben (Lücken sind erlaubt, nur 0 s ist das Minimum) und beim Verschieben rastet alles sofort ein (gelbe Linie)
+- Ein Clip über einen anderen gezogen kappt den darunterliegenden an dieser Stelle (wie bei DaVinci)
+- Beim Verschieben und Kürzen zeigt ein Feld Start- und Endzeit an
 - Am Playhead teilen, Anfang und Ende per Ziehen kürzen
 - Standbilder auf den Clips zeigen, was wo passiert
 - Timeline mit zwei Fingern rein- und rauszoomen (oder mit der Lupe); den Griff über der Timeline nach oben/unten ziehen, um sie größer oder kleiner zu machen
 
 **Mehrere Videospuren (Overlay)**
 - Mit „Overlay" legst du ein weiteres Video auf die erste freie Videospur (Video 2, Video 3, …). Höhere Spuren liegen oben, **Video 1** (Hauptspur) bleibt immer unten
+- Es gibt anfangs nur **Video 1**. Zieht man ein Element (auch einen Clip) nach oben, entsteht eine neue Spur; nach unten zurückziehen macht es wieder zum Hauptclip. Pro Zug entsteht höchstens eine neue Spur
 - Links in der Timeline stehen die Spurnamen (Video 1/2/3, Untertitel, Text 1/2, Bild 1/2, Ton 1/2); Ton-Spuren wachsen nach unten
 - Element lange drücken und nach oben/unten ziehen wechselt die Spur; ganz an den Rand gezogen entsteht eine neue Spur
 - Frei verschiebbar und kürzbar wie alle anderen Elemente, rastet an Nachbarn ein

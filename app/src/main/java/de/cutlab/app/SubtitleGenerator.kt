@@ -248,7 +248,7 @@ object SubtitleGenerator {
             }
             else -> whisper(ctx, clips, engine, langCode, hint, onStage)
         }
-        return group(words)
+        return group(words.sortedBy { it.startMs })
     }
 
     private fun whisper(
@@ -263,14 +263,14 @@ object SubtitleGenerator {
         val words = mutableListOf<Word>()
         val threads = Runtime.getRuntime().availableProcessors().coerceIn(2, 6)
         try {
-            var offset = 0L
             for ((ci, c) in clips.withIndex()) {
+                val offset = c.startMs
                 onStage("Audio wird vorbereitet (${ci + 1}/${clips.size}) ...", -1f)
                 val pcm = ByteArrayOutputStream()
                 AudioDecoder.decode(ctx, Uri.parse(c.uri), c.inMs, c.outMs, { b, n -> pcm.write(b, 0, n) }, { })
                 val bytes = pcm.toByteArray()
                 val n = bytes.size / 2
-                if (n < 8000) { offset += c.durMs; continue }
+                if (n < 8000) continue
                 val samples = FloatArray(n)
                 for (i in 0 until n) {
                     val lo = bytes[2 * i].toInt() and 0xFF
@@ -297,7 +297,6 @@ object SubtitleGenerator {
                     }
                     words.add(Word(txt, offset + t0, maxOf(offset + t1, offset + t0 + 80)))
                 }
-                offset += c.durMs
             }
         } finally { WhisperLib.release() }
         return words
@@ -310,9 +309,8 @@ object SubtitleGenerator {
         val words = mutableListOf<Word>()
         val total = clips.sumOf { it.durMs }.coerceAtLeast(1L)
         try {
-            var offset = 0L
             for (c in clips) {
-                val base = offset
+                val base = c.startMs
                 val rec = Recognizer(model, 16000f)
                 rec.setWords(true)
                 fun take(json: String) {
@@ -327,7 +325,6 @@ object SubtitleGenerator {
                     { p -> onStage("Sprache wird erkannt ...", (base + p * c.durMs) / total) })
                 take(rec.finalResult)
                 rec.close()
-                offset += c.durMs
             }
         } finally { model.close() }
         return words

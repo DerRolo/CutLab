@@ -6,7 +6,12 @@ enum class Kind { CLIP, SUB, TEXT, IMAGE, AUDIO, VIDEO }
 data class Selection(val kind: Kind, val id: Long)
 
 /** Hauptspur: Videoclips hintereinander. */
-data class Clip(val id: Long, val uri: String, val srcDurMs: Long, val inMs: Long, val outMs: Long) {
+data class Clip(
+    val id: Long, val uri: String, val srcDurMs: Long, val inMs: Long, val outMs: Long,
+    val startMs: Long = 0,                 // freie Position auf der Zeitleiste (Luecken sind erlaubt)
+    val aspect: Float = 0.5625f,
+    val hasAudio: Boolean = true
+) {
     val durMs: Long get() = outMs - inMs
 }
 
@@ -76,7 +81,19 @@ data class Project(
     val aspect: AspectPreset = AspectPreset.PORTRAIT,
     val name: String = "Neues Projekt"
 ) {
-    val totalMs: Long get() = clips.sumOf { it.durMs }
+    /** Ende des letzten sichtbaren Elements (Musik zaehlt nur, wenn es sonst nichts gibt). */
+    val totalMs: Long get() {
+        var t = 0L
+        clips.forEach { t = maxOf(t, it.startMs + it.durMs) }
+        videos.forEach { t = maxOf(t, it.startMs + it.durMs) }
+        images.forEach { t = maxOf(t, it.startMs + it.durMs) }
+        texts.forEach { t = maxOf(t, it.startMs + it.durMs) }
+        subs.forEach { t = maxOf(t, it.endMs) }
+        if (t == 0L) audios.forEach { t = maxOf(t, it.startMs + it.durMs) }
+        return t
+    }
+
+    val isEmpty: Boolean get() = clips.isEmpty() && videos.isEmpty() && texts.isEmpty() && images.isEmpty() && subs.isEmpty() && audios.isEmpty()
 }
 
 fun evenWords(text: String, s: Long, e: Long): List<Word> {

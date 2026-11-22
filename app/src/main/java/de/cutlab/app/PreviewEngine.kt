@@ -11,47 +11,42 @@ class PreviewEngine(private val ctx: Context) {
     val player: ExoPlayer = ExoPlayer.Builder(ctx).build()
     private val audio = HashMap<Long, ExoPlayer>()
     private val vids = HashMap<Long, ExoPlayer>()          // Player der Overlay-Videos
-    private var sig: List<Triple<String, Long, Long>> = emptyList()
+    private var sorted: List<Clip> = emptyList()
+    private var sig: List<List<Any>> = emptyList()
+    private var lastPos = -1L
+    private var lastIdx = -2
 
+    /** Spielliste der Hauptspur (nach Startzeit sortiert). Luecken kennt der Player nicht, die steuert sync(). */
     fun setClips(clips: List<Clip>, posMs: Long) {
-        val s = clips.map { Triple(it.uri, it.inMs, it.outMs) }
-        if (s == sig) return
-        sig = s
-        if (clips.isEmpty()) { player.clearMediaItems(); return }
-        player.setMediaItems(clips.map {
+        val s = clips.sortedBy { it.startMs }
+        val key = s.map { listOf<Any>(it.uri, it.inMs, it.outMs, it.startMs) }
+        sorted = s
+        lastPos = -1L
+        if (key == sig) return
+        sig = key
+        if (s.isEmpty()) { player.clearMediaItems(); return }
+        player.setMediaItems(s.map {
             MediaItem.Builder().setUri(it.uri).setClippingConfiguration(
                 MediaItem.ClippingConfiguration.Builder().setStartPositionMs(it.inMs).setEndPositionMs(it.outMs).build()
             ).build()
         })
         player.prepare()
-        seek(clips, posMs)
     }
 
-    fun seek(clips: List<Clip>, ms: Long) {
-        var acc = 0L
-        for ((i, c) in clips.withIndex()) {
-            if (ms < acc + c.durMs || i == clips.lastIndex) {
-                if (i < player.mediaItemCount) player.seekTo(i, (ms - acc).coerceIn(0L, c.durMs))
-                return
-            }
-            acc += c.durMs
+    /** Stellt den Player passend zur Timeline-Position ein; in Luecken steht er still (die Vorschau zeigt dort Schwarz). */
+    fun sync(pos: Long, playing: Boolean) {
+        val i = sorted.indexOfFirst { pos >= it.startMs && pos < it.startMs + it.durMs }
+        if (i < 0) {
+            if (player.playWhenReady) player.pause()
+            lastPos = pos; lastIdx = -1
+            return
         }
-    }
-
-    fun pos(clips: List<Clip>): Long {
-        val i = player.currentMediaItemIndex
-        var acc = 0L
-        for (k in 0 until minOf(i, clips.size)) acc += clips[k].durMs
-        return acc + player.currentPosition.coerceAtLeast(0L)
-    }
-
-    fun toggle(clips: List<Clip>, total: Long) {
-        if (clips.isEmpty()) return
-        if (player.isPlaying) player.pause()
-        else {
-            if (player.playbackState == Player.STATE_ENDED || pos(clips) >= total - 50) seek(clips, 0)
-            player.play()
-        }
+        if (!playing && !player.playWhenReady && pos == lastPos && i == lastIdx) return
+        lastPos = pos; lastIdx = i
+        val c = sorted[i]
+        val want = pos - c.startMs
+        if (player.currentMediaItemIndex != i || abs(player.currentPosition - want) > (if (playing) 400L else 40L)) player.seekTo(i, want)
+        if (playing) { if (!player.playWhenReady) player.play() } else if (player.playWhenReady) player.pause()
     }
 
     fun syncAudio(items: List<AudioItem>, playing: Boolean, pos: Long) {
