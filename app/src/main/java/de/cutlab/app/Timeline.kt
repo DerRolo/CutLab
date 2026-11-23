@@ -4,6 +4,7 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.calculateZoom
@@ -95,6 +96,7 @@ fun Timeline(vm: EditorViewModel, modifier: Modifier = Modifier, onEdit: (Select
     val scroll = rememberScrollState()       // waagerecht (Zeit)
     val vScroll = rememberScrollState()      // senkrecht (Spuren), gemeinsam mit den Spurnamen
     val sel = vm.selection
+    var menuKey by remember { mutableStateOf<Pair<Kind, Int>?>(null) }     // Spur, deren Loeschen-Knopf gerade offen ist
 
     ScrollSync(vm, scroll, pxPerMs)
 
@@ -114,8 +116,25 @@ fun Timeline(vm: EditorViewModel, modifier: Modifier = Modifier, onEdit: (Select
             Column(Modifier.width(LABEL_W).fillMaxHeight().background(Color(0xFF14141A)).verticalScroll(vScroll)) {
                 Spacer(Modifier.height(RULER))
                 rows.forEach { r ->
-                    Box(Modifier.height(STRIDE).fillMaxWidth().padding(horizontal = 5.dp), contentAlignment = Alignment.CenterStart) {
-                        Text(r.label, color = r.color, fontSize = 10.sp, maxLines = 1)
+                    val key = r.kind to r.lane
+                    Box(
+                        Modifier.height(STRIDE).fillMaxWidth().padding(horizontal = 3.dp)
+                            .pointerInput(key) { detectTapGestures(onLongPress = { menuKey = key }, onTap = { menuKey = null }) },
+                        contentAlignment = Alignment.CenterStart
+                    ) {
+                        if (menuKey == key) {
+                            // Spurname lange gedrueckt: ganze Spur auf einmal loeschen
+                            Row(
+                                Modifier.fillMaxWidth().height(26.dp).background(Color(0xFF8E2424), RoundedCornerShape(6.dp))
+                                    .clickable { vm.deleteTrack(r.kind, r.lane); menuKey = null },
+                                verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.Center
+                            ) {
+                                Icon(Icons.Default.Delete, "Spur loeschen", tint = Color.White, modifier = Modifier.size(15.dp))
+                                Text(" Alle", color = Color.White, fontSize = 10.sp)
+                            }
+                        } else {
+                            Text(r.label, color = r.color, fontSize = 10.sp, maxLines = 1, modifier = Modifier.padding(horizontal = 2.dp))
+                        }
                     }
                 }
             }

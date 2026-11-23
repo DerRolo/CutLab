@@ -1,12 +1,16 @@
 #include <jni.h>
 #include <string>
 #include <atomic>
+#include <vector>
 
 #ifdef HAVE_WHISPER
 #include "whisper.h"
 
 static std::atomic<bool> g_abort(false);
 static bool abort_cb(void *) { return g_abort.load(); }
+
+static std::atomic<int> g_progress(0);
+static void progress_cb(struct whisper_context *, struct whisper_state *, int progress, void *) { g_progress = progress; }
 
 // Nur gueltiges UTF-8 (ohne 4-Byte-Zeichen) durchlassen, damit NewStringUTF nie abstuerzt.
 static std::string sanitize(const char *s) {
@@ -35,14 +39,25 @@ Java_de_cutlab_app_WhisperLib_nativeAvailable(JNIEnv *, jobject) {
 }
 
 JNIEXPORT jlong JNICALL
-Java_de_cutlab_app_WhisperLib_initContext(JNIEnv *env, jobject, jstring modelPath) {
+Java_de_cutlab_app_WhisperLib_initContext(JNIEnv *env, jobject, jstring modelPath, jboolean small) {
 #ifdef HAVE_WHISPER
     const char *path = env->GetStringUTFChars(modelPath, nullptr);
     whisper_context_params cp = whisper_context_default_params();
     cp.use_gpu = false;
+    cp.dtw_token_timestamps = true;                                   // genaue Wortzeiten
+    cp.dtw_aheads_preset = small ? WHISPER_AHEADS_SMALL : WHISPER_AHEADS_BASE;
     whisper_context *ctx = whisper_init_from_file_with_params(path, cp);
     env->ReleaseStringUTFChars(modelPath, path);
     return reinterpret_cast<jlong>(ctx);
+#else
+    return 0;
+#endif
+}
+
+JNIEXPORT jint JNICALL
+Java_de_cutlab_app_WhisperLib_progress(JNIEnv *, jobject) {
+#ifdef HAVE_WHISPER
+    return g_progress.load();
 #else
     return 0;
 #endif
@@ -69,6 +84,7 @@ Java_de_cutlab_app_WhisperLib_transcribe(JNIEnv *env, jobject, jlong ptr, jfloat
     auto *ctx = reinterpret_cast<whisper_context *>(ptr);
     if (!ctx) return nullptr;
     g_abort = false;
+    g_progress = 0;
 
     jsize n = env->GetArrayLength(audio);
     jfloat *samples = env->GetFloatArrayElements(audio, nullptr);
@@ -88,8 +104,8 @@ Java_de_cutlab_app_WhisperLib_transcribe(JNIEnv *env, jobject, jlong ptr, jfloat
     wp.language = langStr.c_str();             // "auto" = automatisch erkennen
     wp.n_threads = threads;
     wp.token_timestamps = true;                // Wort-Zeitstempel
-    wp.max_len = 1;                            // ein Wort pro Segment
-    wp.split_on_word = true;
+    wp.progress_callback = progress_cb;
+    wp.progress_callback_user_data = nullptr;
     wp.suppress_blank = true;
     wp.initial_prompt = promptStr.empty() ? nullptr : promptStr.c_str();   // Namen/Woerter als Hinweis
     wp.abort_callback = abort_cb;
@@ -99,16 +115,33 @@ Java_de_cutlab_app_WhisperLib_transcribe(JNIEnv *env, jobject, jlong ptr, jfloat
     env->ReleaseFloatArrayElements(audio, samples, JNI_ABORT);
     if (rc != 0) return nullptr;
 
+    // Woerter aus den Tokens bauen: neues Wort beginnt bei einem Token mit fuehrendem Leerzeichen
+    struct Wd { long long start; long long segEnd; std::string text; };
+    std::vector<Wd> words;
+    const whisper_token eot = whisper_token_eot(ctx);
     int ns = whisper_full_n_segments(ctx);
-    jclass strClass = env->FindClass("java/lang/String");
-    jobjectArray out = env->NewObjectArray(ns, strClass, nullptr);
     for (int i = 0; i < ns; i++) {
-        long long t0 = (long long) whisper_full_get_segment_t0(ctx, i) * 10;   // 10-ms-Einheiten -> ms
-        long long t1 = (long long) whisper_full_get_segment_t1(ctx, i) * 10;
-        std::string row = std::to_string(t0) + "|" + std::to_string(t1) + "|" +
-                          sanitize(whisper_full_get_segment_text(ctx, i));
+        long long segEnd = (long long) whisper_full_get_segment_t1(ctx, i) * 10;
+        int nt = whisper_full_n_tokens(ctx, i);
+        bool firstTok = true;
+        for (int j = 0; j < nt; j++) {
+            whisper_token_data td = whisper_full_get_token_data(ctx, i, j);
+            if (td.id >= eot) continue;                               // Sondertokens (Zeitmarken, Sprache, ...)
+            const char *tt = whisper_full_get_token_text(ctx, i, j);
+            if (!tt || !*tt) continue;
+            std::string t(tt);
+            long long ts = (td.t_dtw >= 0 ? (long long) td.t_dtw : (long long) td.t0) * 10;   // 10-ms-Einheiten -> ms
+            if (t[0] == ' ' || firstTok || words.empty()) words.push_back({ts, segEnd, t});
+            else words.back().text += t;
+            firstTok = false;
+        }
+    }
+    jclass strClass = env->FindClass("java/lang/String");
+    jobjectArray out = env->NewObjectArray((jsize) words.size(), strClass, nullptr);
+    for (size_t i = 0; i < words.size(); i++) {
+        std::string row = std::to_string(words[i].start) + "|" + std::to_string(words[i].segEnd) + "|" + sanitize(words[i].text.c_str());
         jstring js = env->NewStringUTF(row.c_str());
-        env->SetObjectArrayElement(out, i, js);
+        env->SetObjectArrayElement(out, (jsize) i, js);
         env->DeleteLocalRef(js);
     }
     return out;

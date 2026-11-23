@@ -371,6 +371,24 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
         posMs = posMs.coerceAtMost(np.totalMs)
     }
 
+    /** Loescht alle Elemente einer Spur (z. B. alle Untertitel auf einmal). */
+    fun deleteTrack(k: Kind, lane: Int) {
+        snap()
+        val p = project
+        project = when (k) {
+            Kind.CLIP -> p.copy(clips = emptyList())
+            Kind.VIDEO -> p.copy(videos = p.videos.filter { it.track != lane })
+            Kind.SUB -> p.copy(subs = emptyList())
+            Kind.TEXT -> p.copy(texts = p.texts.filter { it.lane != lane })
+            Kind.IMAGE -> p.copy(images = p.images.filter { it.lane != lane })
+            Kind.AUDIO -> p.copy(audios = p.audios.filter { it.lane != lane })
+        }
+        selection = null
+        compactLanes()
+        engine.setClips(project.clips, posMs)
+        posMs = posMs.coerceAtMost(project.totalMs)
+    }
+
     fun setText(sel: Selection, text: String) {
         snap()
         val p = project

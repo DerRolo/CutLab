@@ -170,7 +170,8 @@ object WhisperLib {
     }
 
     private external fun nativeAvailable(): Boolean
-    external fun initContext(modelPath: String): Long
+    external fun initContext(modelPath: String, small: Boolean): Long
+    external fun progress(): Int
     external fun freeContext(ctx: Long)
     external fun transcribe(ctx: Long, audio: FloatArray, lang: String, prompt: String, threads: Int): Array<String>?
     external fun abort()
@@ -191,7 +192,7 @@ object WhisperLib {
         handler.removeCallbacks(releaseTask)
         if (cachedKey != key || cachedCtx == 0L) {
             if (cachedCtx != 0L) freeContext(cachedCtx)
-            cachedCtx = initContext(path)
+            cachedCtx = initContext(path, key == AsrEngine.WHISPER_SMALL.name)
             cachedKey = if (cachedCtx != 0L) key else null
         }
         busy = true
@@ -256,7 +257,7 @@ object SubtitleGenerator {
         onStage: (String, Float) -> Unit
     ): List<Word> {
         if (!WhisperLib.available) error("Whisper ist in dieser App-Version nicht enthalten. Bitte \"Einfach (Vosk)\" wählen.")
-        val model = WhisperModels.ensure(ctx, engine) { onStage("Sprachmodell wird geladen ...", it) }
+        val model = WhisperModels.ensure(ctx, engine) { onStage(if (it >= 0f) "Sprachmodell wird geladen: ${(it * 100).toInt()} %" else "Sprachmodell wird geladen ...", it) }
         onStage("Modell wird gestartet ...", -1f)
         val handle = WhisperLib.acquire(engine.name, model.absolutePath)
         if (handle == 0L) error("Whisper-Modell konnte nicht geladen werden.")
@@ -265,7 +266,8 @@ object SubtitleGenerator {
         try {
             for ((ci, c) in clips.withIndex()) {
                 val offset = c.startMs
-                onStage("Audio wird vorbereitet (${ci + 1}/${clips.size}) ...", -1f)
+                val tag = if (clips.size > 1) " (Clip ${ci + 1} von ${clips.size})" else ""
+                onStage("Audio wird vorbereitet$tag ...", -1f)
                 val pcm = ByteArrayOutputStream()
                 AudioDecoder.decode(ctx, Uri.parse(c.uri), c.inMs, c.outMs, { b, n -> pcm.write(b, 0, n) }, { })
                 val bytes = pcm.toByteArray()
@@ -277,39 +279,48 @@ object SubtitleGenerator {
                     val hi = bytes[2 * i + 1].toInt()
                     samples[i] = ((hi shl 8) or lo).toShort() / 32768f
                 }
-                val act = speechFrames(samples)
-                onStage("Sprache wird erkannt (${ci + 1}/${clips.size}) ...", -1f)
-                val rows = WhisperLib.transcribe(handle, samples, lang, hint.trim(), threads)
-                    ?: error("Spracherkennung fehlgeschlagen oder abgebrochen.")
+                // Fortschritt der Erkennung laufend abfragen
+                val running = java.util.concurrent.atomic.AtomicBoolean(true)
+                val poll = Thread {
+                    while (running.get()) {
+                        val pr = WhisperLib.progress().coerceIn(0, 100)
+                        onStage("Sprache wird erkannt$tag: $pr %", (pr / 100f))
+                        try { Thread.sleep(300) } catch (_: InterruptedException) { break }
+                    }
+                }
+                poll.start()
+                val rows = try {
+                    WhisperLib.transcribe(handle, samples, lang, hint.trim(), threads)
+                        ?: error("Spracherkennung fehlgeschlagen oder abgebrochen.")
+                } finally { running.set(false); poll.interrupt() }
+
+                // Zeilen lesen: Wortbeginn (genau, per DTW) und Ende des Satzes
+                val parsed = ArrayList<Triple<Long, Long, String>>()
                 for (r in rows) {
                     val a = r.indexOf('|'); val b = r.indexOf('|', a + 1)
                     if (a < 0 || b < 0) continue
-                    var t0 = r.substring(0, a).toLongOrNull() ?: continue
-                    var t1 = r.substring(a + 1, b).toLongOrNull() ?: continue
+                    val st = r.substring(0, a).toLongOrNull() ?: continue
+                    val se = r.substring(a + 1, b).toLongOrNull() ?: continue
                     val txt = r.substring(b + 1).trim()
                     if (txt.isEmpty()) continue
                     // Platzhalter wie [BLANK_AUDIO] oder (Musik) ueberspringen
                     if ((txt.startsWith("[") && txt.endsWith("]")) || (txt.startsWith("(") && txt.endsWith(")")) || txt.startsWith("\u266A")) continue
-                    // Whisper dehnt Woerter oft ueber Pausen. Mit der echten Lautstaerke auf den gesprochenen Teil kuerzen.
-                    if (act.isNotEmpty()) {
-                        val m = 80L
-                        val f0 = ((t0 - m) / 20).toInt().coerceIn(0, act.size - 1)
-                        val f1 = ((t1 + m + 19) / 20).toInt().coerceIn(f0, act.size - 1)
-                        var first = -1
-                        var lastA = -1
-                        for (f in f0..f1) if (act[f]) { if (first < 0) first = f; lastA = f }
-                        if (first < 0) continue                       // dort ist nichts zu hoeren (Stille / erfundenes Wort)
-                        t0 = maxOf(t0 - m, first * 20L)
-                        t1 = minOf(t1 + m, (lastA + 1) * 20L + 60L)
-                        if (t1 < t0 + 80) t1 = t0 + 80
-                    }
                     // reine Satzzeichen an das vorige Wort haengen
-                    if (txt.none { it.isLetterOrDigit() } && words.isNotEmpty()) {
-                        val last = words.removeAt(words.lastIndex)
-                        words.add(last.copy(text = last.text + txt, endMs = maxOf(last.endMs, offset + t1)))
+                    if (txt.none { it.isLetterOrDigit() } && parsed.isNotEmpty()) {
+                        val last = parsed.removeAt(parsed.lastIndex)
+                        parsed.add(Triple(last.first, last.second, last.third + txt))
                         continue
                     }
-                    words.add(Word(txt, offset + t0, maxOf(offset + t1, offset + t0 + 80)))
+                    parsed.add(Triple(st, se, txt))
+                }
+                // Wortende: nie ueber das naechste Wort, den Satz oder eine plausible Sprechdauer hinaus (Pausen bleiben Pausen)
+                for ((k, w) in parsed.withIndex()) {
+                    val start = maxOf(w.first, if (k > 0) parsed[k - 1].first else 0L)
+                    val dur = (250L + 60L * w.third.length).coerceAtMost(1300L)
+                    var end = minOf(w.second, start + dur)
+                    if (k + 1 < parsed.size && parsed[k + 1].first > start) end = minOf(end, parsed[k + 1].first)
+                    if (end < start + 80) end = start + 80
+                    words.add(Word(w.third, offset + start, offset + end))
                 }
             }
         } finally { WhisperLib.release() }
