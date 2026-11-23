@@ -22,6 +22,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.*
+import kotlinx.coroutines.withTimeoutOrNull
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -32,6 +33,9 @@ import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.positionChange
+import androidx.compose.ui.hapticfeedback.HapticFeedback
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.LocalViewConfiguration
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.Dp
@@ -97,6 +101,10 @@ fun Timeline(vm: EditorViewModel, modifier: Modifier = Modifier, onEdit: (Select
     val vScroll = rememberScrollState()      // senkrecht (Spuren), gemeinsam mit den Spurnamen
     val sel = vm.selection
     var menuKey by remember { mutableStateOf<Pair<Kind, Int>?>(null) }     // Spur, deren Loeschen-Knopf gerade offen ist
+
+    val haptic = LocalHapticFeedback.current
+    // leichtes Ticken, sobald etwas einrastet (andockt)
+    LaunchedEffect(vm.snapGuideMs) { if (vm.snapGuideMs != null) haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove) }
 
     ScrollSync(vm, scroll, pxPerMs)
 
@@ -255,6 +263,7 @@ private fun ItemBox(
     val px by rememberUpdatedState(pxPerMs)
     val itemNow by rememberUpdatedState(item)
     val stridePx by rememberUpdatedState(with(LocalDensity.current) { STRIDE.toPx() })
+    val haptic = LocalHapticFeedback.current
     Box(
         Modifier
             .zIndex(if (sel) 1f else 0f)
@@ -268,6 +277,7 @@ private fun ItemBox(
             .pointerInput(item.id) {
                 detectDragGesturesAfterLongPress(
                     onDragStart = {
+                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)     // Angepackt
                         vm.select(Selection(itemNow.kind, itemNow.id))
                         vm.beginDrag()
                         vm.beginFine(itemNow.startMs)     // Lange gedrueckt = Feinmodus
@@ -290,18 +300,19 @@ private fun ItemBox(
                 .then(if (item.uri != null) Modifier.background(Color(0x99000000), RoundedCornerShape(4.dp)).padding(horizontal = 4.dp) else Modifier)
         )
         if (sel) {
-            Handle(Alignment.CenterStart, px, vm, { itemNow.startMs }) { vm.trimStart(itemNow.kind, itemNow.id, it) }
-            Handle(Alignment.CenterEnd, px, vm, { itemNow.startMs + itemNow.durMs }) { vm.trimEnd(itemNow.kind, itemNow.id, it) }
+            Handle(Alignment.CenterStart, px, vm, haptic, { itemNow.startMs }) { vm.trimStart(itemNow.kind, itemNow.id, it) }
+            Handle(Alignment.CenterEnd, px, vm, haptic, { itemNow.startMs + itemNow.durMs }) { vm.trimEnd(itemNow.kind, itemNow.id, it) }
         }
     }
 }
 
 @Composable
-private fun BoxScope.Handle(align: Alignment, pxPerMs: Float, vm: EditorViewModel, edgeMs: () -> Long, onDeltaMs: (Float) -> Unit) {
+private fun BoxScope.Handle(align: Alignment, pxPerMs: Float, vm: EditorViewModel, haptic: HapticFeedback, edgeMs: () -> Long, onDeltaMs: (Float) -> Unit) {
     val px by rememberUpdatedState(pxPerMs)
     val cb by rememberUpdatedState(onDeltaMs)
     val edge by rememberUpdatedState(edgeMs)
     val slop = LocalViewConfiguration.current.touchSlop
+    val longPressMs = LocalViewConfiguration.current.longPressTimeoutMillis
     Box(
         Modifier.align(align).width(24.dp).fillMaxHeight().background(Color.White.copy(alpha = 0.9f)),
         contentAlignment = Alignment.Center
@@ -312,23 +323,34 @@ private fun BoxScope.Handle(align: Alignment, pxPerMs: Float, vm: EditorViewMode
                 awaitEachGesture {
                     val down = awaitFirstDown(requireUnconsumed = false)
                     down.consume()                       // sofort beanspruchen, damit Scrollen nicht dazwischenfunkt
-                    var started = false
-                    var acc = 0f
+                    // Phase 1: sofort ziehen (normaler Zoom) oder lange halten (Feinmodus) oder nur antippen
+                    val phase = withTimeoutOrNull(longPressMs) {
+                        var res = -1
+                        while (res < 0) {
+                            val ev = awaitPointerEvent()
+                            val ch = ev.changes.firstOrNull { it.id == down.id }
+                            if (ch == null || !ch.pressed) res = 0
+                            else {
+                                ch.consume()
+                                if (kotlin.math.abs(ch.position.x - down.position.x) > slop) res = 1
+                            }
+                        }
+                        res
+                    }
+                    if (phase == 0) return@awaitEachGesture              // nur angetippt
+                    vm.beginDrag()
+                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)      // Angepackt
+                    if (phase == null) vm.beginFine(edge())                         // lange gehalten: Feinmodus (zoomt heran)
+                    // Phase 2: ziehen
                     while (true) {
                         val ev = awaitPointerEvent()
                         val ch = ev.changes.firstOrNull { it.id == down.id } ?: break
                         if (!ch.pressed) break
                         val dx = ch.positionChange().x
-                        if (!started) {
-                            acc += dx
-                            if (kotlin.math.abs(acc) > slop) {
-                                started = true
-                                vm.beginDrag(); vm.beginFine(edge())      // Anfassen = Feinmodus (zoomt heran)
-                            }
-                        } else if (dx != 0f) cb(dx / px)
+                        if (dx != 0f) cb(dx / px)
                         ch.consume()
                     }
-                    if (started) vm.endDrag()
+                    vm.endDrag()
                 }
             }
         )

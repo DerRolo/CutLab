@@ -46,6 +46,7 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
     var busyProgress by mutableFloatStateOf(-1f); private set
     var message by mutableStateOf<String?>(null)
     var showProjects by mutableStateOf(false)
+    var showSubList by mutableStateOf(false)
     var timelineDp by mutableFloatStateOf(150f)          // Hoehe der Timeline, per Griff verstellbar
     var presets by mutableStateOf<List<SubPreset>>(emptyList()); private set
     var defaultPreset by mutableStateOf<String?>(null); private set
@@ -458,6 +459,9 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
 
     fun setTextSize(id: Long, v: Float) = live { p -> p.copy(texts = p.texts.map { if (it.id == id) it.copy(size = v) else it }) }
     fun setTextColor(id: Long, c: Int) = live { p -> p.copy(texts = p.texts.map { if (it.id == id) it.copy(color = c) else it }) }
+    fun setClipGain(id: Long, db: Float) = live { p -> p.copy(clips = p.clips.map { if (it.id == id) it.copy(gainDb = db) else it }) }
+    fun setAudioGain(id: Long, db: Float) = live { p -> p.copy(audios = p.audios.map { if (it.id == id) it.copy(gainDb = db) else it }) }
+    fun setVideoGain(id: Long, db: Float) = live { p -> p.copy(videos = p.videos.map { if (it.id == id) it.copy(gainDb = db) else it }) }
     fun setVideoScale(id: Long, v: Float) = live { p -> p.copy(videos = p.videos.map { if (it.id == id) it.copy(scale = v) else it }) }
     fun setVideoMuted(id: Long, m: Boolean) { snap(); project = project.copy(videos = project.videos.map { if (it.id == id) it.copy(muted = m) else it }) }
     fun setVideoFade(id: Long, ms: Long) { snap(); project = project.copy(videos = project.videos.map { if (it.id == id) it.copy(fadeMs = ms) else it }) }
@@ -468,6 +472,19 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
         return painter.videoAlpha(v, posMs)
     }
     fun setImageScale(id: Long, v: Float) = live { p -> p.copy(images = p.images.map { if (it.id == id) it.copy(scale = v) else it }) }
+    fun setSubHidePunct(b: Boolean) { snap(); project = project.copy(subStyle = project.subStyle.copy(hidePunct = b)) }
+
+    /** Text eines Untertitels in der Liste bearbeiten (Wortzeiten werden gleichmaessig neu verteilt). */
+    fun setSubTextLive(id: Long, text: String) = live { p ->
+        p.copy(subs = p.subs.map { if (it.id == id) it.copy(text = text, words = evenWords(text, it.startMs, it.endMs)) else it })
+    }
+
+    fun deleteSubById(id: Long) {
+        snap()
+        project = project.copy(subs = project.subs.filter { it.id != id })
+        if (selection?.id == id) selection = null
+    }
+
     fun setSubKind(k: SubKind) { snap(); project = project.copy(subStyle = project.subStyle.copy(kind = k)) }
     fun setSubSize(v: Float) = live { p -> p.copy(subStyle = p.subStyle.copy(size = v)) }
     fun setTextOutline(id: Long, c: Int) = live { p -> p.copy(texts = p.texts.map { if (it.id == id) it.copy(outline = c) else it }) }
@@ -521,7 +538,7 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
                 val fit = if (c.aspect >= p.aspect.ratio) 1f else c.aspect / p.aspect.ratio
                 project = p.copy(
                     clips = p.clips.filter { it.id != id },
-                    videos = p.videos + VideoItem(id, c.uri, c.srcDurMs, c.aspect, c.startMs, c.inMs, c.durMs, scale = fit, track = l - 1, hasAudio = c.hasAudio)
+                    videos = p.videos + VideoItem(id, c.uri, c.srcDurMs, c.aspect, c.startMs, c.inMs, c.durMs, scale = fit, track = l - 1, hasAudio = c.hasAudio, gainDb = c.gainDb)
                 )
                 selection = Selection(Kind.VIDEO, id)
                 engine.setClips(project.clips, posMs)
@@ -531,7 +548,7 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
                 val v = p.videos.find { it.id == id } ?: return
                 project = p.copy(
                     videos = p.videos.filter { it.id != id },
-                    clips = p.clips + Clip(id, v.uri, v.srcDurMs, v.inMs, v.inMs + v.durMs, v.startMs, v.aspect, v.hasAudio)
+                    clips = p.clips + Clip(id, v.uri, v.srcDurMs, v.inMs, v.inMs + v.durMs, v.startMs, v.aspect, v.hasAudio, v.gainDb)
                 )
                 selection = Selection(Kind.CLIP, id)
                 engine.setClips(project.clips, posMs)

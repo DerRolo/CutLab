@@ -70,7 +70,8 @@ fun EditorScreen(vm: EditorViewModel = viewModel()) {
     val pickImage = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { it?.let(vm::addImage) }
     val pickAudio = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { it?.let(vm::addAudio) }
 
-    if (vm.showProjects) ProjectsScreen(vm)
+    if (vm.showSubList) SubtitleListScreen(vm)
+    else if (vm.showProjects) ProjectsScreen(vm)
     else Column(Modifier.fillMaxSize().background(Color(0xFF101014)).systemBarsPadding()) {
         TopBar(vm) { renaming = true }
         PreviewArea(vm, Modifier.weight(1f)) { editing = it }
@@ -83,7 +84,7 @@ fun EditorScreen(vm: EditorViewModel = viewModel()) {
             contentAlignment = Alignment.Center
         ) { Box(Modifier.width(44.dp).height(4.dp).clip(RoundedCornerShape(2.dp)).background(Color.Gray)) }
         Timeline(vm, Modifier.fillMaxWidth().height(vm.timelineDp.dp), onEdit = { editing = it })
-        SelectionPanel(vm, onEditText = { editing = vm.selection }, onPresets = { showPresets = true })
+        SelectionPanel(vm, onEditText = { editing = vm.selection }, onPresets = { showPresets = true }, onList = { vm.showSubList = true })
         Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).background(Color(0xFF181820))) {
             Tool(Icons.Default.Movie, "Video") { pickVideo.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.VideoOnly)) }
             Tool(Icons.Default.ContentCut, "Teilen") { vm.split() }
@@ -92,6 +93,7 @@ fun EditorScreen(vm: EditorViewModel = viewModel()) {
             Tool(Icons.Default.Image, "Bild") { pickImage.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) }
             Tool(Icons.Default.MusicNote, "Musik") { pickAudio.launch(arrayOf("audio/*")) }
             Tool(Icons.Default.Subtitles, "Untertitel") { showLang = true }
+            Tool(Icons.Default.FormatListBulleted, "Liste") { if (vm.project.subs.isEmpty()) vm.message = "Noch keine Untertitel. Erzeuge sie zuerst über „Untertitel\"." else vm.showSubList = true }
             Tool(Icons.Default.Delete, "Loeschen") { vm.deleteSelected() }
         }
     }
@@ -389,7 +391,7 @@ private fun TimeLabel(vm: EditorViewModel) {
 private val outlinePalette = listOf(0xFF000000, 0xFFFFFFFF, 0xFF1F2A44, 0x00000000).map { it.toInt() }
 
 @Composable
-private fun SelectionPanel(vm: EditorViewModel, onEditText: () -> Unit, onPresets: () -> Unit) {
+private fun SelectionPanel(vm: EditorViewModel, onEditText: () -> Unit, onPresets: () -> Unit, onList: () -> Unit) {
     var subTab by remember { mutableIntStateOf(0) }
     val sel = vm.selection ?: return
     val p = vm.project
@@ -409,6 +411,7 @@ private fun SelectionPanel(vm: EditorViewModel, onEditText: () -> Unit, onPreset
                             FilterChip(selected = v.fadeMs == ms, onClick = { vm.setVideoFade(v.id, ms) }, label = { Text(label, fontSize = 12.sp) }, modifier = Modifier.padding(end = 4.dp))
                         }
                     }
+                    VolumeRow(v.gainDb) { vm.setVideoGain(v.id, it) }
                     Text("Größe (oder mit zwei Fingern in der Vorschau)", color = Color.Gray, fontSize = 11.sp)
                     Slider(v.scale, { vm.setVideoScale(v.id, it) }, valueRange = 0.1f..1.5f)
                 }
@@ -422,6 +425,11 @@ private fun SelectionPanel(vm: EditorViewModel, onEditText: () -> Unit, onPreset
                             FilterChip(selected = subTab == i, onClick = { subTab = i }, label = { Text(label, fontSize = 12.sp) }, modifier = Modifier.padding(end = 4.dp))
                         }
                         FilterChip(
+                            selected = false, onClick = onList,
+                            label = { Text("☰ Liste", fontSize = 12.sp) },
+                            leadingIcon = null, modifier = Modifier.padding(end = 4.dp)
+                        )
+                        FilterChip(
                             selected = false, onClick = onPresets,
                             label = { Text("★ Vorlagen", fontSize = 12.sp) },
                             leadingIcon = null, modifier = Modifier.padding(end = 4.dp)
@@ -432,6 +440,7 @@ private fun SelectionPanel(vm: EditorViewModel, onEditText: () -> Unit, onPreset
                             SubKind.values().forEach { k ->
                                 FilterChip(selected = p.subStyle.kind == k, onClick = { vm.setSubKind(k) }, label = { Text(k.label, fontSize = 12.sp) }, modifier = Modifier.padding(end = 4.dp))
                             }
+                            FilterChip(selected = p.subStyle.hidePunct, onClick = { vm.setSubHidePunct(!p.subStyle.hidePunct) }, label = { Text("Ohne Satzzeichen", fontSize = 12.sp) })
                         }
                         1 -> Column {
                             ColorRow("Schrift", p.subStyle.color, palette) { vm.setSubColor(it) }
@@ -441,10 +450,17 @@ private fun SelectionPanel(vm: EditorViewModel, onEditText: () -> Unit, onPreset
                         else -> Slider(p.subStyle.size, { vm.setSubSize(it) }, valueRange = 0.025f..0.15f)
                     }
                 }
-                Kind.CLIP, Kind.AUDIO -> Text(
-                    "Anfang/Ende ziehen = kürzen  |  lange drücken und ziehen = verschieben (auch nach oben/unten in eine andere Spur)",
-                    color = Color.Gray, fontSize = 11.sp, modifier = Modifier.padding(vertical = 6.dp)
-                )
+                Kind.CLIP -> p.clips.find { it.id == sel.id }?.let { c ->
+                    VolumeRow(c.gainDb) { vm.setClipGain(c.id, it) }
+                    Text(
+                        "Anfang/Ende ziehen = kürzen  |  lange drücken und ziehen = verschieben (auch nach oben/unten in eine andere Spur)",
+                        color = Color.Gray, fontSize = 11.sp, modifier = Modifier.padding(vertical = 2.dp)
+                    )
+                }
+                Kind.AUDIO -> p.audios.find { it.id == sel.id }?.let { a ->
+                    Text(a.name, color = Color.Gray, fontSize = 11.sp, maxLines = 1)
+                    VolumeRow(a.gainDb) { vm.setAudioGain(a.id, it) }
+                }
             }
         }
         IconButton(onClick = { vm.deleteSelected() }) { Icon(Icons.Default.Delete, "Löschen", tint = Color(0xFFFF8A80)) }
@@ -517,4 +533,38 @@ private fun GapCover(vm: EditorViewModel) {
     val pos = vm.posMs
     val covered = vm.project.clips.any { pos >= it.startMs && pos < it.startMs + it.durMs }
     if (!covered) Box(Modifier.fillMaxSize().background(Color.Black))
+}
+
+private fun dbLabel(db: Float): String = if (db <= -60f) "Aus" else (if (db > 0f) "+" else "") + "%.1f dB".format(db)
+
+/** Lautstaerke: Schieberegler (-60 bis +12 dB) und Wert in dB, der sich antippen und eintippen laesst. */
+@Composable
+private fun VolumeRow(db: Float, onChange: (Float) -> Unit) {
+    var dialog by remember { mutableStateOf(false) }
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Icon(Icons.Default.VolumeUp, "Lautstärke", tint = Color.White, modifier = Modifier.size(20.dp))
+        Slider(db, { onChange((it * 2f).roundToInt() / 2f) }, valueRange = -60f..12f, modifier = Modifier.weight(1f).padding(horizontal = 6.dp))
+        Text(dbLabel(db), color = Color(0xFF69F0AE), fontSize = 13.sp, modifier = Modifier.clickable { dialog = true }.padding(6.dp))
+    }
+    if (db > 0f) Text("Die Vorschau ist auf 0 dB begrenzt, der Export wird lauter.", color = Color.Gray, fontSize = 11.sp)
+    if (dialog) {
+        var txt by remember { mutableStateOf(if (db <= -60f) "-60" else String.format(java.util.Locale.US, "%.1f", db)) }
+        AlertDialog(
+            onDismissRequest = { dialog = false },
+            title = { Text("Lautstärke in dB") },
+            text = {
+                Column {
+                    OutlinedTextField(txt, { txt = it }, singleLine = true, placeholder = { Text("z. B. -6 oder +3") })
+                    Text("0 = unverändert, negativ = leiser, positiv = lauter. -60 oder weniger = aus.", color = Color.Gray, fontSize = 11.sp)
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    txt.replace(',', '.').trim().toFloatOrNull()?.let { onChange(it.coerceIn(-60f, 24f)) }
+                    dialog = false
+                }) { Text("OK") }
+            },
+            dismissButton = { TextButton(onClick = { dialog = false }) { Text("Abbrechen") } }
+        )
+    }
 }

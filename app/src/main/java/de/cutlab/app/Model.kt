@@ -10,7 +10,8 @@ data class Clip(
     val id: Long, val uri: String, val srcDurMs: Long, val inMs: Long, val outMs: Long,
     val startMs: Long = 0,                 // freie Position auf der Zeitleiste (Luecken sind erlaubt)
     val aspect: Float = 0.5625f,
-    val hasAudio: Boolean = true
+    val hasAudio: Boolean = true,
+    val gainDb: Float = 0f                 // Lautstaerke in Dezibel
 ) {
     val durMs: Long get() = outMs - inMs
 }
@@ -40,14 +41,19 @@ data class VideoItem(
     val track: Int = 0,               // 0 = "Video 2", 1 = "Video 3" (hoehere Spur liegt oben)
     val fadeMs: Long = 0,             // Ein-/Ausblenden
     val muted: Boolean = false,
-    val hasAudio: Boolean = true
+    val hasAudio: Boolean = true,
+    val gainDb: Float = 0f
 )
 
 data class AudioItem(
     val id: Long, val uri: String, val name: String, val srcDurMs: Long,
     val startMs: Long, val inMs: Long, val durMs: Long,
-    val lane: Int = 0
+    val lane: Int = 0,
+    val gainDb: Float = 0f                 // Lautstaerke in Dezibel (-60 = aus)
 )
+
+/** Dezibel in einen Faktor umrechnen (-60 dB und weniger = stumm). */
+fun dbToLinear(db: Float): Float = if (db <= -60f) 0f else Math.pow(10.0, db / 20.0).toFloat()
 
 data class Word(val text: String, val startMs: Long, val endMs: Long)
 data class Subtitle(val id: Long, val startMs: Long, val endMs: Long, val text: String, val words: List<Word>)
@@ -62,7 +68,8 @@ data class SubStyle(
     val color: Int = Color.WHITE,
     val highlight: Int = 0xFFFFD400.toInt(),
     val x: Float = 0.5f,
-    val outline: Int = Color.BLACK
+    val outline: Int = Color.BLACK,
+    val hidePunct: Boolean = false     // Satzzeichen (Punkt, Komma, ...) ausblenden
 )
 
 enum class AspectPreset(val label: String, val w: Int, val h: Int) {
@@ -81,7 +88,7 @@ data class Project(
     val aspect: AspectPreset = AspectPreset.PORTRAIT,
     val name: String = "Neues Projekt"
 ) {
-    /** Ende des letzten sichtbaren Elements (Musik zaehlt nur, wenn es sonst nichts gibt). */
+    /** Ende des letzten Elements (Video, Overlay, Bild, Text, Untertitel oder Ton). */
     val totalMs: Long get() {
         var t = 0L
         clips.forEach { t = maxOf(t, it.startMs + it.durMs) }
@@ -89,7 +96,7 @@ data class Project(
         images.forEach { t = maxOf(t, it.startMs + it.durMs) }
         texts.forEach { t = maxOf(t, it.startMs + it.durMs) }
         subs.forEach { t = maxOf(t, it.endMs) }
-        if (t == 0L) audios.forEach { t = maxOf(t, it.startMs + it.durMs) }
+        audios.forEach { t = maxOf(t, it.startMs + it.durMs) }          // auch Musik zaehlt: das Laengste bestimmt das Projektende
         return t
     }
 

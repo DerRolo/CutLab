@@ -20,6 +20,12 @@ class OverlayPainter(
     /** Rahmen der zuletzt gezeichneten Elemente (fuer Auswahlrahmen in der Vorschau). */
     val bounds = HashMap<Long, RectF>()
 
+    private fun shown(s: String, hide: Boolean): String {
+        if (!hide) return s
+        val c = s.trim { !it.isLetterOrDigit() }
+        return if (c.isEmpty()) s else c
+    }
+
     private fun active(t: Long, s: Long, d: Long) = t >= s && t < s + d
     private fun subWords(s: Subtitle) = s.words.ifEmpty { evenWords(s.text, s.startMs, s.endMs) }
     private fun activeIdx(w: List<Word>, t: Long): Int = w.indexOfLast { t >= it.startMs }.coerceAtLeast(0)
@@ -38,9 +44,9 @@ class OverlayPainter(
         val st = p.subStyle
         val idx = activeIdx(words, t)
         when (st.kind) {
-            SubKind.CLASSIC -> block(c, w, h, sub.id, words.map { it.text }, -1, st.x * w, st.y * h, st.size, st.color, st.highlight, st.outline, 1f)
-            SubKind.KARAOKE -> block(c, w, h, sub.id, words.map { it.text }, idx, st.x * w, st.y * h, st.size, st.color, st.highlight, st.outline, 1f)
-            SubKind.POP -> block(c, w, h, sub.id, listOf(words[idx].text), 0, st.x * w, st.y * h,
+            SubKind.CLASSIC -> block(c, w, h, sub.id, words.map { shown(it.text, st.hidePunct) }, -1, st.x * w, st.y * h, st.size, st.color, st.highlight, st.outline, 1f)
+            SubKind.KARAOKE -> block(c, w, h, sub.id, words.map { shown(it.text, st.hidePunct) }, idx, st.x * w, st.y * h, st.size, st.color, st.highlight, st.outline, 1f)
+            SubKind.POP -> block(c, w, h, sub.id, listOf(shown(words[idx].text, st.hidePunct)), 0, st.x * w, st.y * h,
                 st.size * 1.35f, st.highlight, st.highlight, st.outline, popScale(t - words[idx].startMs))
         }
     }

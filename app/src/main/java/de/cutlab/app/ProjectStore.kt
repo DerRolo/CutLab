@@ -55,11 +55,11 @@ object ProjectStore {
         put("aspect", p.aspect.name)
         put("subStyle", JSONObject().apply {
             put("kind", p.subStyle.kind.name); put("size", p.subStyle.size.toDouble()); put("y", p.subStyle.y.toDouble())
-            put("color", p.subStyle.color); put("highlight", p.subStyle.highlight); put("x", p.subStyle.x.toDouble()); put("outline", p.subStyle.outline)
+            put("color", p.subStyle.color); put("highlight", p.subStyle.highlight); put("x", p.subStyle.x.toDouble()); put("outline", p.subStyle.outline); put("hidePunct", p.subStyle.hidePunct)
         })
         put("clips", arr(p.clips) {
             JSONObject().put("id", it.id).put("uri", it.uri).put("src", it.srcDurMs).put("in", it.inMs).put("out", it.outMs)
-                .put("start", it.startMs).put("aspect", it.aspect.toDouble()).put("hasAudio", it.hasAudio)
+                .put("start", it.startMs).put("aspect", it.aspect.toDouble()).put("hasAudio", it.hasAudio).put("gain", it.gainDb.toDouble())
         })
         put("texts", arr(p.texts) {
             JSONObject().put("id", it.id).put("text", it.text).put("s", it.startMs).put("d", it.durMs)
@@ -73,11 +73,11 @@ object ProjectStore {
             JSONObject().put("id", it.id).put("uri", it.uri).put("src", it.srcDurMs).put("aspect", it.aspect.toDouble())
                 .put("s", it.startMs).put("in", it.inMs).put("d", it.durMs).put("x", it.x.toDouble()).put("y", it.y.toDouble())
                 .put("scale", it.scale.toDouble()).put("track", it.track).put("fade", it.fadeMs)
-                .put("muted", it.muted).put("hasAudio", it.hasAudio)
+                .put("muted", it.muted).put("hasAudio", it.hasAudio).put("gain", it.gainDb.toDouble())
         })
         put("audios", arr(p.audios) {
             JSONObject().put("id", it.id).put("uri", it.uri).put("name", it.name).put("src", it.srcDurMs)
-                .put("s", it.startMs).put("in", it.inMs).put("d", it.durMs).put("lane", it.lane)
+                .put("s", it.startMs).put("in", it.inMs).put("d", it.durMs).put("lane", it.lane).put("gain", it.gainDb.toDouble())
         })
         put("subs", arr(p.subs) { s ->
             JSONObject().put("id", s.id).put("s", s.startMs).put("e", s.endMs).put("text", s.text)
@@ -98,7 +98,7 @@ object ProjectStore {
                     val s = if (it.has("start")) it.getLong("start") else acc
                     acc = s + dur
                     Clip(it.getLong("id"), it.getString("uri"), it.getLong("src"), it.getLong("in"), it.getLong("out"),
-                        s, it.optDouble("aspect", 0.5625).toFloat(), it.optBoolean("hasAudio", true))
+                        s, it.optDouble("aspect", 0.5625).toFloat(), it.optBoolean("hasAudio", true), it.optDouble("gain", 0.0).toFloat())
                 }
             },
             texts = list(j.optJSONArray("texts")) {
@@ -112,10 +112,10 @@ object ProjectStore {
             videos = list(j.optJSONArray("videos")) {
                 VideoItem(it.getLong("id"), it.getString("uri"), it.getLong("src"), it.getDouble("aspect").toFloat(),
                     it.getLong("s"), it.getLong("in"), it.getLong("d"), it.getDouble("x").toFloat(), it.getDouble("y").toFloat(),
-                    it.getDouble("scale").toFloat(), it.getInt("track"), it.getLong("fade"), it.getBoolean("muted"), it.optBoolean("hasAudio", true))
+                    it.getDouble("scale").toFloat(), it.getInt("track"), it.getLong("fade"), it.getBoolean("muted"), it.optBoolean("hasAudio", true), it.optDouble("gain", 0.0).toFloat())
             },
             audios = list(j.optJSONArray("audios")) {
-                AudioItem(it.getLong("id"), it.getString("uri"), it.getString("name"), it.getLong("src"), it.getLong("s"), it.getLong("in"), it.getLong("d"), it.optInt("lane", 0))
+                AudioItem(it.getLong("id"), it.getString("uri"), it.getString("name"), it.getLong("src"), it.getLong("s"), it.getLong("in"), it.getLong("d"), it.optInt("lane", 0), it.optDouble("gain", 0.0).toFloat())
             },
             subs = list(j.optJSONArray("subs")) { s ->
                 Subtitle(s.getLong("id"), s.getLong("s"), s.getLong("e"), s.getString("text"),
@@ -123,7 +123,7 @@ object ProjectStore {
             },
             subStyle = if (st == null) SubStyle() else SubStyle(
                 SubKind.valueOf(st.getString("kind")), st.getDouble("size").toFloat(), st.getDouble("y").toFloat(),
-                st.getInt("color"), st.getInt("highlight"), st.optDouble("x", 0.5).toFloat(), st.optInt("outline", 0xFF000000.toInt())
+                st.getInt("color"), st.getInt("highlight"), st.optDouble("x", 0.5).toFloat(), st.optInt("outline", 0xFF000000.toInt()), st.optBoolean("hidePunct", false)
             ),
             aspect = AspectPreset.valueOf(j.optString("aspect", AspectPreset.PORTRAIT.name)),
             name = j.optString("name", "Projekt")

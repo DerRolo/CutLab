@@ -284,7 +284,7 @@ object SubtitleGenerator {
                 val poll = Thread {
                     while (running.get()) {
                         val pr = WhisperLib.progress().coerceIn(0, 100)
-                        onStage("Sprache wird erkannt$tag: $pr %", (pr / 100f))
+                        onStage("Untertitel werden erzeugt$tag: $pr %", (pr / 100f))
                         try { Thread.sleep(300) } catch (_: InterruptedException) { break }
                     }
                 }
@@ -357,7 +357,7 @@ object SubtitleGenerator {
 
     private fun vosk(ctx: Context, clips: List<Clip>, lang: VoskLang, onStage: (String, Float) -> Unit): List<Word> {
         val dir = VoskModels.ensure(ctx, lang) { onStage("Sprachmodell wird geladen ...", it) }
-        onStage("Sprache wird erkannt ...", 0f)
+        onStage("Untertitel werden erzeugt ...", 0f)
         val model = Model(dir.absolutePath)
         val words = mutableListOf<Word>()
         val total = clips.sumOf { it.durMs }.coerceAtLeast(1L)
@@ -375,7 +375,7 @@ object SubtitleGenerator {
                 }
                 AudioDecoder.decode(ctx, Uri.parse(c.uri), c.inMs, c.outMs,
                     { buf, n -> if (rec.acceptWaveForm(buf, n)) take(rec.result) },
-                    { p -> onStage("Sprache wird erkannt ...", (base + p * c.durMs) / total) })
+                    { p -> onStage("Untertitel werden erzeugt: ${(((base + p * c.durMs) / total) * 100).toInt()} %", (base + p * c.durMs) / total) })
                 take(rec.finalResult)
                 rec.close()
             }

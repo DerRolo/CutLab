@@ -44,6 +44,8 @@ class PreviewEngine(private val ctx: Context) {
         if (!playing && !player.playWhenReady && pos == lastPos && i == lastIdx) return
         lastPos = pos; lastIdx = i
         val c = sorted[i]
+        val vol = minOf(1f, dbToLinear(c.gainDb))
+        if (player.volume != vol) player.volume = vol
         val want = pos - c.startMs
         if (player.currentMediaItemIndex != i || abs(player.currentPosition - want) > (if (playing) 400L else 40L)) player.seekTo(i, want)
         if (playing) { if (!player.playWhenReady) player.play() } else if (player.playWhenReady) player.pause()
@@ -56,6 +58,7 @@ class PreviewEngine(private val ctx: Context) {
             val ap = audio.getOrPut(a.id) {
                 ExoPlayer.Builder(ctx).build().apply { setMediaItem(MediaItem.fromUri(a.uri)); prepare() }
             }
+            ap.volume = minOf(1f, dbToLinear(a.gainDb))
             val inside = pos >= a.startMs && pos < a.startMs + a.durMs
             if (playing && inside) {
                 val want = a.inMs + (pos - a.startMs)
@@ -69,7 +72,7 @@ class PreviewEngine(private val ctx: Context) {
     fun videoPlayer(v: VideoItem): ExoPlayer = vids.getOrPut(v.id) {
         ExoPlayer.Builder(ctx).build().apply {
             setMediaItem(MediaItem.fromUri(v.uri)); prepare()
-            volume = if (v.muted) 0f else 1f
+            volume = if (v.muted) 0f else minOf(1f, dbToLinear(v.gainDb))
         }
     }
 
@@ -80,7 +83,7 @@ class PreviewEngine(private val ctx: Context) {
         for (v in items) {
             if (v.id !in live) continue
             val pl = videoPlayer(v)
-            pl.volume = if (v.muted) 0f else 1f
+            pl.volume = if (v.muted) 0f else minOf(1f, dbToLinear(v.gainDb))
             val inside = pos >= v.startMs && pos < v.startMs + v.durMs
             val want = v.inMs + (pos - v.startMs).coerceAtLeast(0L)
             if (playing && inside) {

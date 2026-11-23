@@ -15,6 +15,8 @@ import androidx.media3.common.Effect
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MimeTypes
 import androidx.media3.common.audio.AudioProcessor
+import androidx.media3.common.audio.ChannelMixingAudioProcessor
+import androidx.media3.common.audio.ChannelMixingMatrix
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.effect.BitmapOverlay
 import androidx.media3.effect.OverlayEffect
@@ -102,7 +104,7 @@ class Exporter(private val ctx: Context, private val images: ImageCache) {
             val mi = MediaItem.Builder().setUri(c.uri).setClippingConfiguration(
                 MediaItem.ClippingConfiguration.Builder().setStartPositionMs(c.inMs).setEndPositionMs(c.inMs + dur).build()
             ).build()
-            val item = EditedMediaItem.Builder(mi).setRemoveVideo(true).build()
+            val item = EditedMediaItem.Builder(mi).setRemoveVideo(true).setEffects(gainEffects(c.gainDb)).build()
             val b = EditedMediaItemSequence.Builder()
             if (c.startMs > 0) b.addGap(c.startMs * 1000)
             b.addItem(item)
@@ -115,7 +117,7 @@ class Exporter(private val ctx: Context, private val images: ImageCache) {
             val mi = MediaItem.Builder().setUri(a.uri).setClippingConfiguration(
                 MediaItem.ClippingConfiguration.Builder().setStartPositionMs(a.inMs).setEndPositionMs(a.inMs + dur).build()
             ).build()
-            val item = EditedMediaItem.Builder(mi).setRemoveVideo(true).build()
+            val item = EditedMediaItem.Builder(mi).setRemoveVideo(true).setEffects(gainEffects(a.gainDb)).build()
             val b = EditedMediaItemSequence.Builder()
             if (a.startMs > 0) b.addGap(a.startMs * 1000)
             b.addItem(item)
@@ -130,7 +132,7 @@ class Exporter(private val ctx: Context, private val images: ImageCache) {
             val mi = MediaItem.Builder().setUri(v.uri).setClippingConfiguration(
                 MediaItem.ClippingConfiguration.Builder().setStartPositionMs(v.inMs).setEndPositionMs(v.inMs + dur).build()
             ).build()
-            val item = EditedMediaItem.Builder(mi).setRemoveVideo(true).build()
+            val item = EditedMediaItem.Builder(mi).setRemoveVideo(true).setEffects(gainEffects(v.gainDb)).build()
             val b = EditedMediaItemSequence.Builder()
             if (v.startMs > 0) b.addGap(v.startMs * 1000)
             b.addItem(item)
@@ -188,6 +190,18 @@ class Exporter(private val ctx: Context, private val images: ImageCache) {
                 handler.postDelayed(this, 300)
             }
         })
+    }
+
+    /** Lautstaerke in dB als Audio-Effekt (0 dB = keine Aenderung). */
+    private fun gainEffects(db: Float): Effects {
+        if (db == 0f) return Effects.EMPTY
+        return try {
+            val g = dbToLinear(db)
+            val mixer = ChannelMixingAudioProcessor()
+            mixer.putChannelMixingMatrix(ChannelMixingMatrix.create(1, 2).scaleBy(g))
+            mixer.putChannelMixingMatrix(ChannelMixingMatrix.create(2, 2).scaleBy(g))
+            Effects(listOf<AudioProcessor>(mixer), emptyList<Effect>())
+        } catch (e: Exception) { Effects.EMPTY }
     }
 
     private fun hasAudioTrack(uri: String): Boolean {
