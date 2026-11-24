@@ -44,6 +44,8 @@ import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
 import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.layout.layout
 import androidx.compose.ui.unit.Constraints
@@ -93,7 +95,7 @@ fun EditorScreen(vm: EditorViewModel = viewModel()) {
             Tool(Icons.Default.Image, "Bild") { pickImage.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) }
             Tool(Icons.Default.MusicNote, "Musik") { pickAudio.launch(arrayOf("audio/*")) }
             Tool(Icons.Default.Subtitles, "Untertitel") { showLang = true }
-            Tool(Icons.Default.FormatListBulleted, "Liste") { if (vm.project.subs.isEmpty()) vm.message = "Noch keine Untertitel. Erzeuge sie zuerst über „Untertitel\"." else vm.showSubList = true }
+            Tool(Icons.Default.FormatListBulleted, "Untertitel-Liste") { if (vm.project.subs.isEmpty()) vm.message = "Noch keine Untertitel. Erzeuge sie zuerst über „Untertitel\"." else vm.showSubList = true }
             Tool(Icons.Default.Delete, "Loeschen") { vm.deleteSelected() }
         }
     }
@@ -190,7 +192,7 @@ fun EditorScreen(vm: EditorViewModel = viewModel()) {
         var pname by remember { mutableStateOf("") }
         AlertDialog(
             onDismissRequest = { showPresets = false },
-            title = { Text("Untertitel-Vorlagen") },
+            title = { Text("Vorlage laden oder speichern") },
             text = {
                 Column(Modifier.verticalScroll(rememberScrollState())) {
                     Text("Aktuellen Stil speichern (Art, Größe, Position, Farben):", fontSize = 12.sp)
@@ -402,7 +404,7 @@ private fun SelectionPanel(vm: EditorViewModel, onEditText: () -> Unit, onPreset
                     TextButton(onClick = onEditText) { Icon(Icons.Default.Edit, null); Spacer(Modifier.width(6.dp)); Text("Text ändern") }
                     ColorRow("Schrift", t.color, palette) { vm.setTextColor(t.id, it) }
                     ColorRow("Kontur", t.outline, outlinePalette) { vm.setTextOutline(t.id, it) }
-                    Slider(t.size, { vm.setTextSize(t.id, it) }, valueRange = 0.02f..0.2f)
+                    SizeRow("Schriftgröße", t.size, 0.02f..0.2f) { vm.setTextSize(t.id, it) }
                 }
                 Kind.VIDEO -> p.videos.find { it.id == sel.id }?.let { v ->
                     Row(Modifier.horizontalScroll(rememberScrollState()), verticalAlignment = Alignment.CenterVertically) {
@@ -421,33 +423,39 @@ private fun SelectionPanel(vm: EditorViewModel, onEditText: () -> Unit, onPreset
                 }
                 Kind.SUB -> {
                     Row(Modifier.horizontalScroll(rememberScrollState()), verticalAlignment = Alignment.CenterVertically) {
-                        listOf("Stil", "Farbe", "Größe").forEachIndexed { i, label ->
+                        listOf("Stil", "Größe", "Extras").forEachIndexed { i, label ->
                             FilterChip(selected = subTab == i, onClick = { subTab = i }, label = { Text(label, fontSize = 12.sp) }, modifier = Modifier.padding(end = 4.dp))
                         }
                         FilterChip(
                             selected = false, onClick = onList,
-                            label = { Text("☰ Liste", fontSize = 12.sp) },
+                            label = { Text("Untertitelliste", fontSize = 12.sp) },
                             leadingIcon = null, modifier = Modifier.padding(end = 4.dp)
                         )
                         FilterChip(
                             selected = false, onClick = onPresets,
-                            label = { Text("★ Vorlagen", fontSize = 12.sp) },
+                            label = { Text("★ Vorlage laden/speichern", fontSize = 12.sp) },
                             leadingIcon = null, modifier = Modifier.padding(end = 4.dp)
                         )
                     }
                     when (subTab) {
-                        0 -> Row(Modifier.horizontalScroll(rememberScrollState()), verticalAlignment = Alignment.CenterVertically) {
-                            SubKind.values().forEach { k ->
-                                FilterChip(selected = p.subStyle.kind == k, onClick = { vm.setSubKind(k) }, label = { Text(k.label, fontSize = 12.sp) }, modifier = Modifier.padding(end = 4.dp))
+                        0 -> Column {
+                            Row(Modifier.horizontalScroll(rememberScrollState()), verticalAlignment = Alignment.CenterVertically) {
+                                SubKind.values().forEach { k ->
+                                    FilterChip(selected = p.subStyle.kind == k, onClick = { vm.setSubKind(k) }, label = { Text(k.label, fontSize = 12.sp) }, modifier = Modifier.padding(end = 4.dp))
+                                }
                             }
-                            FilterChip(selected = p.subStyle.hidePunct, onClick = { vm.setSubHidePunct(!p.subStyle.hidePunct) }, label = { Text("Ohne Satzzeichen", fontSize = 12.sp) })
-                        }
-                        1 -> Column {
                             ColorRow("Schrift", p.subStyle.color, palette) { vm.setSubColor(it) }
                             ColorRow("Aktives Wort", p.subStyle.highlight, palette) { vm.setSubHighlight(it) }
                             ColorRow("Kontur", p.subStyle.outline, outlinePalette) { vm.setSubOutline(it) }
                         }
-                        else -> Slider(p.subStyle.size, { vm.setSubSize(it) }, valueRange = 0.025f..0.15f)
+                        1 -> SizeRow("Schriftgröße", p.subStyle.size, 0.025f..0.15f) { vm.setSubSize(it) }
+                        else -> Row(verticalAlignment = Alignment.CenterVertically) {
+                            FilterChip(
+                                selected = p.subStyle.hidePunct, onClick = { vm.setSubHidePunct(!p.subStyle.hidePunct) },
+                                label = { Text("Ohne Satzzeichen", fontSize = 12.sp) }, modifier = Modifier.padding(end = 8.dp)
+                            )
+                            Text("Blendet Punkt, Komma usw. aus.\nDer Text selbst bleibt erhalten.", color = Color.Gray, fontSize = 11.sp)
+                        }
                     }
                 }
                 Kind.CLIP -> p.clips.find { it.id == sel.id }?.let { c ->
@@ -546,7 +554,6 @@ private fun VolumeRow(db: Float, onChange: (Float) -> Unit) {
         Slider(db, { onChange((it * 2f).roundToInt() / 2f) }, valueRange = -60f..12f, modifier = Modifier.weight(1f).padding(horizontal = 6.dp))
         Text(dbLabel(db), color = Color(0xFF69F0AE), fontSize = 13.sp, modifier = Modifier.clickable { dialog = true }.padding(6.dp))
     }
-    if (db > 0f) Text("Die Vorschau ist auf 0 dB begrenzt, der Export wird lauter.", color = Color.Gray, fontSize = 11.sp)
     if (dialog) {
         var txt by remember { mutableStateOf(if (db <= -60f) "-60" else String.format(java.util.Locale.US, "%.1f", db)) }
         AlertDialog(
@@ -561,6 +568,39 @@ private fun VolumeRow(db: Float, onChange: (Float) -> Unit) {
             confirmButton = {
                 TextButton(onClick = {
                     txt.replace(',', '.').trim().toFloatOrNull()?.let { onChange(it.coerceIn(-60f, 24f)) }
+                    dialog = false
+                }) { Text("OK") }
+            },
+            dismissButton = { TextButton(onClick = { dialog = false }) { Text("Abbrechen") } }
+        )
+    }
+}
+
+/** Schriftgroesse: Schieberegler plus Zahl rechts, die sich antippen und fest eintippen laesst. */
+@Composable
+private fun SizeRow(label: String, value: Float, range: ClosedFloatingPointRange<Float>, onChange: (Float) -> Unit) {
+    var dialog by remember { mutableStateOf(false) }
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Text(label, color = Color.Gray, fontSize = 11.sp, modifier = Modifier.width(78.dp))
+        Slider(value, onChange, valueRange = range, modifier = Modifier.weight(1f).padding(horizontal = 6.dp))
+        Text("${(value * 1000).roundToInt()}", color = Color(0xFF69F0AE), fontSize = 13.sp, modifier = Modifier.clickable { dialog = true }.padding(6.dp))
+    }
+    if (dialog) {
+        var txt by remember { mutableStateOf("${(value * 1000).roundToInt()}") }
+        val lo = (range.start * 1000).roundToInt()
+        val hi = (range.endInclusive * 1000).roundToInt()
+        AlertDialog(
+            onDismissRequest = { dialog = false },
+            title = { Text(label) },
+            text = {
+                Column {
+                    OutlinedTextField(txt, { txt = it }, singleLine = true, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number))
+                    Text("Erlaubt: $lo bis $hi (50 ist mittelgroß)", color = Color.Gray, fontSize = 11.sp)
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    txt.trim().toIntOrNull()?.let { onChange((it.coerceIn(lo, hi)) / 1000f) }
                     dialog = false
                 }) { Text("OK") }
             },

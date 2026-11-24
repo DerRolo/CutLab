@@ -33,9 +33,7 @@ import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.positionChange
-import androidx.compose.ui.hapticfeedback.HapticFeedback
-import androidx.compose.ui.hapticfeedback.HapticFeedbackType
-import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalViewConfiguration
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.Dp
@@ -102,9 +100,9 @@ fun Timeline(vm: EditorViewModel, modifier: Modifier = Modifier, onEdit: (Select
     val sel = vm.selection
     var menuKey by remember { mutableStateOf<Pair<Kind, Int>?>(null) }     // Spur, deren Loeschen-Knopf gerade offen ist
 
-    val haptic = LocalHapticFeedback.current
+    val ctx = LocalContext.current
     // leichtes Ticken, sobald etwas einrastet (andockt)
-    LaunchedEffect(vm.snapGuideMs) { if (vm.snapGuideMs != null) haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove) }
+    LaunchedEffect(vm.snapGuideMs) { if (vm.snapGuideMs != null) Haptics.snap(ctx) }
 
     ScrollSync(vm, scroll, pxPerMs)
 
@@ -197,11 +195,24 @@ fun Timeline(vm: EditorViewModel, modifier: Modifier = Modifier, onEdit: (Select
                         val x = half.toPx() + g * pxPerMs - scroll.value
                         drawLine(Color(0xFFFFEB3B), Offset(x, 0f), Offset(x, size.height), 3f)
                     }
+                    // rote Markierung mit Zeit an der Kante, die gerade gezogen wird (der Playhead bleibt stehen)
+                    val e = vm.dragEdgeMs
+                    if (e != null) {
+                        val x = half.toPx() + e * pxPerMs - scroll.value
+                        drawLine(Color(0xFFFF3B30), Offset(x, 0f), Offset(x, size.height), 3f)
+                        val label = fmtTime(e)
+                        drawIntoCanvas { c ->
+                            val tp = android.graphics.Paint().apply { color = android.graphics.Color.WHITE; textSize = 28f; isAntiAlias = true }
+                            val bg = android.graphics.Paint().apply { color = 0xFFFF3B30.toInt(); isAntiAlias = true }
+                            val w = tp.measureText(label) + 20f
+                            val left = (x - w / 2f).coerceIn(2f, (size.width - w - 2f).coerceAtLeast(2f))
+                            c.nativeCanvas.drawRoundRect(left, 4f, left + w, 40f, 12f, 12f, bg)
+                            c.nativeCanvas.drawText(label, left + 10f, 31f, tp)
+                        }
+                    }
                 }
-                // feststehender Playhead in der Mitte; beim Verschieben/Kuerzen rot mit Zeitanzeige
-                val dragging = vm.dragInfo != null
-                Box(Modifier.align(Alignment.TopCenter).width(2.dp).fillMaxHeight().background(if (dragging) Color(0xFFFF3B30) else Color.White))
-                if (dragging) PlayheadTime(vm, Modifier.align(Alignment.TopCenter).padding(top = RULER))
+                // feststehender Playhead in der Mitte
+                Box(Modifier.align(Alignment.TopCenter).width(2.dp).fillMaxHeight().background(Color.White))
                 // Bearbeiten / Loeschen fuer das ausgewaehlte Element
                 val s = vm.selection
                 if (s != null) {
@@ -263,7 +274,7 @@ private fun ItemBox(
     val px by rememberUpdatedState(pxPerMs)
     val itemNow by rememberUpdatedState(item)
     val stridePx by rememberUpdatedState(with(LocalDensity.current) { STRIDE.toPx() })
-    val haptic = LocalHapticFeedback.current
+    val ctx = LocalContext.current
     Box(
         Modifier
             .zIndex(if (sel) 1f else 0f)
@@ -277,10 +288,9 @@ private fun ItemBox(
             .pointerInput(item.id) {
                 detectDragGesturesAfterLongPress(
                     onDragStart = {
-                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)     // Angepackt
+                        Haptics.pickup(ctx)     // Angepackt
                         vm.select(Selection(itemNow.kind, itemNow.id))
                         vm.beginDrag()
-                        vm.beginFine(itemNow.startMs)     // Lange gedrueckt = Feinmodus
                     },
                     onDragEnd = { vm.endDrag() },
                     onDragCancel = { vm.endDrag() },
@@ -300,19 +310,19 @@ private fun ItemBox(
                 .then(if (item.uri != null) Modifier.background(Color(0x99000000), RoundedCornerShape(4.dp)).padding(horizontal = 4.dp) else Modifier)
         )
         if (sel) {
-            Handle(Alignment.CenterStart, px, vm, haptic, { itemNow.startMs }) { vm.trimStart(itemNow.kind, itemNow.id, it) }
-            Handle(Alignment.CenterEnd, px, vm, haptic, { itemNow.startMs + itemNow.durMs }) { vm.trimEnd(itemNow.kind, itemNow.id, it) }
+            Handle(Alignment.CenterStart, px, vm, ctx, { itemNow.startMs }) { vm.trimStart(itemNow.kind, itemNow.id, it) }
+            Handle(Alignment.CenterEnd, px, vm, ctx, { itemNow.startMs + itemNow.durMs }) { vm.trimEnd(itemNow.kind, itemNow.id, it) }
         }
     }
 }
 
 @Composable
-private fun BoxScope.Handle(align: Alignment, pxPerMs: Float, vm: EditorViewModel, haptic: HapticFeedback, edgeMs: () -> Long, onDeltaMs: (Float) -> Unit) {
+private fun BoxScope.Handle(align: Alignment, pxPerMs: Float, vm: EditorViewModel, ctx: android.content.Context, edgeMs: () -> Long, onDeltaMs: (Float) -> Unit) {
     val px by rememberUpdatedState(pxPerMs)
     val cb by rememberUpdatedState(onDeltaMs)
     val edge by rememberUpdatedState(edgeMs)
     val slop = LocalViewConfiguration.current.touchSlop
-    val longPressMs = LocalViewConfiguration.current.longPressTimeoutMillis
+    val fineHoldMs = 1500L          // erst nach etwa anderthalb Sekunden Halten kommt der Feinmodus (Zoom)
     Box(
         Modifier.align(align).width(24.dp).fillMaxHeight().background(Color.White.copy(alpha = 0.9f)),
         contentAlignment = Alignment.Center
@@ -324,7 +334,7 @@ private fun BoxScope.Handle(align: Alignment, pxPerMs: Float, vm: EditorViewMode
                     val down = awaitFirstDown(requireUnconsumed = false)
                     down.consume()                       // sofort beanspruchen, damit Scrollen nicht dazwischenfunkt
                     // Phase 1: sofort ziehen (normaler Zoom) oder lange halten (Feinmodus) oder nur antippen
-                    val phase = withTimeoutOrNull(longPressMs) {
+                    val phase = withTimeoutOrNull(fineHoldMs) {
                         var res = -1
                         while (res < 0) {
                             val ev = awaitPointerEvent()
@@ -339,8 +349,8 @@ private fun BoxScope.Handle(align: Alignment, pxPerMs: Float, vm: EditorViewMode
                     }
                     if (phase == 0) return@awaitEachGesture              // nur angetippt
                     vm.beginDrag()
-                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)      // Angepackt
-                    if (phase == null) vm.beginFine(edge())                         // lange gehalten: Feinmodus (zoomt heran)
+                    if (phase == null) { Haptics.fine(ctx); vm.beginFine(edge()) }   // lange gehalten: Feinmodus (zoomt heran)
+                    else Haptics.pickup(ctx)                                         // sofort gezogen: normaler Zoom
                     // Phase 2: ziehen
                     while (true) {
                         val ev = awaitPointerEvent()

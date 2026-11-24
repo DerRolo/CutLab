@@ -67,6 +67,8 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
     var snapGuideMs by mutableStateOf<Long?>(null); private set     // gelbe Einrast-Linie in der Timeline
     var dragInfo by mutableStateOf<String?>(null); private set      // Zeitanzeige beim Ziehen/Kuerzen
     private var lastDragged: Selection? = null
+    var dragEdgeMs by mutableStateOf<Long?>(null); private set      // Kante, die gerade gezogen wird (rote Markierung)
+    private var posBefore = 0L
     private var anchorMs = 0L                                          // Playhead vor dem Ziehen (zum Einrasten)
     private var dragRaw = Float.NaN
     private var laneAcc = 0f
@@ -497,12 +499,14 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
 
     /** Feinmodus: beim Verschieben/Kuerzen zoomt die Timeline heran und springt an die Kante (Anzeige im Vorschaubild). */
     fun beginFine(edgeMs: Long) {
-        if (zoomBefore == 0f) zoomBefore = zoom
+        if (zoomBefore == 0f) { zoomBefore = zoom; posBefore = posMs }
         zoom = maxOf(zoom, 280f)
         seekTo(edgeMs)
     }
 
-    private fun endFine() { if (zoomBefore != 0f) { zoom = zoomBefore; zoomBefore = 0f } }
+    private fun endFine() {
+        if (zoomBefore != 0f) { zoom = zoomBefore; zoomBefore = 0f; posMs = posBefore.coerceAtMost(project.totalMs) }   // Playhead zurueck wie vorher
+    }
 
     // ---------- Spuren (Lanes) ----------
     // Video: 0 = Video 1 (Hauptspur), 1.. = Overlay-Spuren (Video 2, 3, ...). Text/Bild/Ton: 0.. = Text 1, Text 2, ...
@@ -649,7 +653,7 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
 
     fun endDrag() {
         endFine()
-        snapGuideMs = null; dragRaw = Float.NaN; dragInfo = null
+        snapGuideMs = null; dragRaw = Float.NaN; dragInfo = null; dragEdgeMs = null
         lastDragged?.let { ld ->
             val kindNow = when {
                 project.clips.any { it.id == ld.id } -> Kind.CLIP
@@ -728,7 +732,8 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
         if (dragRaw < 0f) dragRaw = 0f
         val ns = snapSpan(dragRaw.toLong(), dur, snapPoints(k, id)).coerceAtLeast(0L)
         moveByDelta(k, id, (ns - cur).toFloat())
-        seekTo(ns)                                       // der weisse Strich folgt dem Anfang und zeigt dessen Zeit
+        dragEdgeMs = ns
+        if (zoomBefore != 0f) seekTo(ns)                 // nur im Feinmodus folgt der Playhead
     }
 
     fun trimStart(k: Kind, id: Long, d: Float) {
@@ -741,7 +746,8 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
         trimStartRaw(k, id, (edge - cur).toFloat())
         val now = startOf(k, id) ?: return
         if (now != edge) dragRaw = now.toFloat()           // an Grenze gestoppt: Rohwert folgt der Realitaet
-        seekTo(now)
+        dragEdgeMs = now
+        if (zoomBefore != 0f) seekTo(now)
     }
 
     fun trimEnd(k: Kind, id: Long, d: Float) {
@@ -754,7 +760,8 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
         trimEndRaw(k, id, (edge - (cur + dur)).toFloat())
         val end = (startOf(k, id) ?: return) + (durOf(k, id) ?: return)
         if (end != edge) dragRaw = end.toFloat()
-        seekTo(end)
+        dragEdgeMs = end
+        if (zoomBefore != 0f) seekTo(end)
     }
 
     private fun moveByDelta(k: Kind, id: Long, d: Float) {
