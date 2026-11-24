@@ -47,6 +47,9 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
     var message by mutableStateOf<String?>(null)
     var showProjects by mutableStateOf(false)
     var showSubList by mutableStateOf(false)
+    var trackSel by mutableStateOf<Pair<Kind, Int>?>(null); private set     // ganze Spur ausgewaehlt (z. B. Lautstaerke fuer alle Clips)
+    var loop by mutableStateOf(false)                                        // Endlos-Wiedergabe
+    var fullscreen by mutableStateOf(false)
     var timelineDp by mutableFloatStateOf(150f)          // Hoehe der Timeline, per Griff verstellbar
     var presets by mutableStateOf<List<SubPreset>>(emptyList()); private set
     var defaultPreset by mutableStateOf<String?>(null); private set
@@ -102,8 +105,9 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
                 if (playing) {
                     posMs += dt
                     val tot = project.totalMs
-                    if (posMs >= tot) { posMs = tot; playing = false }
+                    if (posMs >= tot) { if (loop && tot > 0L) posMs = 0L else { posMs = tot; playing = false } }
                 }
+                engine.updateGains(project.clips)
                 engine.sync(posMs, playing)
                 engine.syncAudio(project.audios, playing, posMs)
                 engine.syncVideos(project.videos, playing, posMs)
@@ -127,7 +131,8 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     // ---------- Wiedergabe ----------
-    fun select(s: Selection?) { selection = s }
+    fun select(s: Selection?) { selection = s; trackSel = null }
+    fun selectTrack(k: Kind, lane: Int) { selection = null; trackSel = k to lane }
     fun seekTo(ms: Long) { posMs = ms.coerceIn(0L, project.totalMs) }
     fun togglePlay() {
         val total = project.totalMs
@@ -283,28 +288,28 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
 
     private fun slot(): Pair<Long, Long> = posMs to 3000L
 
-    fun addText(): Long? {
+    fun addText(newLane: Boolean = false): Long? {
         snap()
         val (s, d) = slot()
         val id = nid()
-        set(project.copy(texts = project.texts + TextItem(id, "Text", s, d, lane = freeLane(project.texts.map { Triple(it.lane, it.startMs, it.startMs + it.durMs) }, s, s + d))))
+        set(project.copy(texts = project.texts + TextItem(id, "Text", s, d, lane = laneFor(newLane, project.texts.map { Triple(it.lane, it.startMs, it.startMs + it.durMs) }, s, s + d))))
         selection = Selection(Kind.TEXT, id)
         return id
     }
 
-    fun addImage(uri: Uri) {
+    fun addImage(uri: Uri, newLane: Boolean = false) {
         viewModelScope.launch {
             val local = withContext(Dispatchers.IO) { importFile(uri, "jpg")?.also { images.get(it) } }
             if (local == null) { message = "Bild konnte nicht gelesen werden."; return@launch }
             snap()
             val (s, d) = slot()
             val id = nid()
-            set(project.copy(images = project.images + ImageItem(id, local, s, d, lane = freeLane(project.images.map { Triple(it.lane, it.startMs, it.startMs + it.durMs) }, s, s + d))))
+            set(project.copy(images = project.images + ImageItem(id, local, s, d, lane = laneFor(newLane, project.images.map { Triple(it.lane, it.startMs, it.startMs + it.durMs) }, s, s + d))))
             selection = Selection(Kind.IMAGE, id)
         }
     }
 
-    fun addAudio(uri: Uri) {
+    fun addAudio(uri: Uri, newLane: Boolean = false) {
         viewModelScope.launch {
             val name = withContext(Dispatchers.IO) { nameOf(uri) }
             val meta = withContext(Dispatchers.IO) {
@@ -316,13 +321,13 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
             val dur = if (total > start + MIN) minOf(meta.dur, total - start) else meta.dur
             snap()
             val id = nid()
-            set(project.copy(audios = project.audios + AudioItem(id, meta.uri, name, meta.dur, start, 0, dur, lane = freeLane(project.audios.map { Triple(it.lane, it.startMs, it.startMs + it.durMs) }, start, start + dur))))
+            set(project.copy(audios = project.audios + AudioItem(id, meta.uri, name, meta.dur, start, 0, dur, lane = laneFor(newLane, project.audios.map { Triple(it.lane, it.startMs, it.startMs + it.durMs) }, start, start + dur))))
             selection = Selection(Kind.AUDIO, id)
         }
     }
 
     /** Zusaetzliches Video auf einer Overlay-Spur (Bild-in-Bild / Ueberblenden). */
-    fun addOverlayVideo(uri: Uri) {
+    fun addOverlayVideo(uri: Uri, newLane: Boolean = true) {
         viewModelScope.launch {
             busy = "Video wird importiert ..."; busyProgress = -1f
             val meta = try {
@@ -331,7 +336,7 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
             if (meta == null || meta.w <= 0 || meta.h <= 0) { message = "Video konnte nicht gelesen werden."; return@launch }
             val start = posMs
             val dur = meta.dur
-            val lane = freeLane(project.videos.map { Triple(it.track, it.startMs, it.startMs + it.durMs) }, start, start + dur)
+            val lane = laneFor(newLane, project.videos.map { Triple(it.track, it.startMs, it.startMs + it.durMs) }, start, start + dur)
             snap()
             val id = nid()
             set(project.copy(videos = project.videos + VideoItem(
@@ -386,7 +391,7 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
             Kind.IMAGE -> p.copy(images = p.images.filter { it.lane != lane })
             Kind.AUDIO -> p.copy(audios = p.audios.filter { it.lane != lane })
         }
-        selection = null
+        selection = null; trackSel = null
         compactLanes()
         engine.setClips(project.clips, posMs)
         posMs = posMs.coerceAtMost(project.totalMs)
@@ -461,6 +466,30 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
 
     fun setTextSize(id: Long, v: Float) = live { p -> p.copy(texts = p.texts.map { if (it.id == id) it.copy(size = v) else it }) }
     fun setTextColor(id: Long, c: Int) = live { p -> p.copy(texts = p.texts.map { if (it.id == id) it.copy(color = c) else it }) }
+    fun trackGain(k: Kind, lane: Int): Float = when (k) {
+        Kind.CLIP -> project.clips.firstOrNull { it.hasAudio }?.gainDb
+        Kind.VIDEO -> project.videos.firstOrNull { it.track == lane && it.hasAudio }?.gainDb
+        Kind.AUDIO -> project.audios.firstOrNull { it.lane == lane }?.gainDb
+        else -> null
+    } ?: 0f
+
+    fun trackHasAudio(k: Kind, lane: Int): Boolean = when (k) {
+        Kind.CLIP -> project.clips.any { it.hasAudio }
+        Kind.VIDEO -> project.videos.any { it.track == lane && it.hasAudio }
+        Kind.AUDIO -> project.audios.any { it.lane == lane }
+        else -> false
+    }
+
+    /** Lautstaerke fuer ALLE Elemente einer Spur auf einmal. */
+    fun setTrackGain(k: Kind, lane: Int, db: Float) = live { p ->
+        when (k) {
+            Kind.CLIP -> p.copy(clips = p.clips.map { it.copy(gainDb = db) })
+            Kind.VIDEO -> p.copy(videos = p.videos.map { if (it.track == lane) it.copy(gainDb = db) else it })
+            Kind.AUDIO -> p.copy(audios = p.audios.map { if (it.lane == lane) it.copy(gainDb = db) else it })
+            else -> p
+        }
+    }
+
     fun setClipGain(id: Long, db: Float) = live { p -> p.copy(clips = p.clips.map { if (it.id == id) it.copy(gainDb = db) else it }) }
     fun setAudioGain(id: Long, db: Float) = live { p -> p.copy(audios = p.audios.map { if (it.id == id) it.copy(gainDb = db) else it }) }
     fun setVideoGain(id: Long, db: Float) = live { p -> p.copy(videos = p.videos.map { if (it.id == id) it.copy(gainDb = db) else it }) }
@@ -579,6 +608,10 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
         val nl = (cur + delta).coerceIn(0, minOf(maxLaneOthers(k, id) + 1, 6))
         if (nl != cur) setLane(k, id, nl)
     }
+
+    /** Overlay: immer eine neue, hoehere Spur; sonst die niedrigste freie. */
+    private fun laneFor(newLane: Boolean, occupied: List<Triple<Int, Long, Long>>, start: Long, end: Long): Int =
+        if (newLane) minOf((occupied.maxOfOrNull { it.first } ?: -1) + 1, 5) else freeLane(occupied, start, end)
 
     /** Niedrigste Spur, auf der im Zeitraum noch nichts liegt. */
     private fun freeLane(occupied: List<Triple<Int, Long, Long>>, start: Long, end: Long): Int {

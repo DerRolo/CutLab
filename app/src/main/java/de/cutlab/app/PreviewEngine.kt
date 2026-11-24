@@ -15,6 +15,7 @@ class PreviewEngine(private val ctx: Context) {
     private val vids = HashMap<Long, ExoPlayer>()          // Player der Overlay-Videos
     private val enhancers = HashMap<ExoPlayer, LoudnessEnhancer>()
     private val lastMb = HashMap<ExoPlayer, Int>()
+    @Volatile private var gains: Map<Long, Float> = emptyMap()     // aktuelle Lautstaerke der Clips (aendert sich ohne neue Spielliste)
     private var sorted: List<Clip> = emptyList()
     private var sig: List<List<Any>> = emptyList()
     private var lastPos = -1L
@@ -59,6 +60,8 @@ class PreviewEngine(private val ctx: Context) {
         player.prepare()
     }
 
+    fun updateGains(clips: List<Clip>) { gains = clips.associate { it.id to it.gainDb } }
+
     /** Stellt den Player passend zur Timeline-Position ein; in Luecken steht er still (die Vorschau zeigt dort Schwarz). */
     fun sync(pos: Long, playing: Boolean) {
         val i = sorted.indexOfFirst { pos >= it.startMs && pos < it.startMs + it.durMs }
@@ -67,10 +70,10 @@ class PreviewEngine(private val ctx: Context) {
             lastPos = pos; lastIdx = -1
             return
         }
+        applyGain(player, gains[sorted[i].id] ?: sorted[i].gainDb, false)
         if (!playing && !player.playWhenReady && pos == lastPos && i == lastIdx) return
         lastPos = pos; lastIdx = i
         val c = sorted[i]
-        applyGain(player, c.gainDb, false)
         val want = pos - c.startMs
         if (player.currentMediaItemIndex != i || abs(player.currentPosition - want) > (if (playing) 400L else 40L)) player.seekTo(i, want)
         if (playing) { if (!player.playWhenReady) player.play() } else if (player.playWhenReady) player.pause()

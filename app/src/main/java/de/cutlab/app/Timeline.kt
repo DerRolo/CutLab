@@ -16,6 +16,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material3.Icon
@@ -125,7 +126,8 @@ fun Timeline(vm: EditorViewModel, modifier: Modifier = Modifier, onEdit: (Select
                     val key = r.kind to r.lane
                     Box(
                         Modifier.height(STRIDE).fillMaxWidth().padding(horizontal = 3.dp)
-                            .pointerInput(key) { detectTapGestures(onLongPress = { menuKey = key }, onTap = { menuKey = null }) },
+                            .background(if (vm.trackSel == key) Color(0x40FFFFFF) else Color.Transparent, RoundedCornerShape(6.dp))
+                            .pointerInput(key) { detectTapGestures(onLongPress = { menuKey = key }, onTap = { menuKey = null; vm.selectTrack(r.kind, r.lane) }) },
                         contentAlignment = Alignment.CenterStart
                     ) {
                         if (menuKey == key) {
@@ -221,6 +223,7 @@ fun Timeline(vm: EditorViewModel, modifier: Modifier = Modifier, onEdit: (Select
                             .background(Color(0xDD000000), RoundedCornerShape(20.dp)).padding(horizontal = 2.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
+                        IconButton(onClick = { vm.select(null) }, modifier = Modifier.size(38.dp)) { Icon(Icons.Default.Close, "Auswahl aufheben", tint = Color.White) }
                         if (s.kind == Kind.TEXT || s.kind == Kind.SUB) {
                             IconButton(onClick = { onEdit(s) }, modifier = Modifier.size(38.dp)) { Icon(Icons.Default.Edit, "Text bearbeiten", tint = Color.White) }
                         }
