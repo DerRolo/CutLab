@@ -45,6 +45,7 @@ import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
 import android.app.Activity
+import kotlinx.coroutines.launch
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.ui.input.pointer.PointerEventPass
@@ -74,6 +75,9 @@ fun EditorScreen(vm: EditorViewModel = viewModel()) {
     var showPresets by remember { mutableStateOf(false) }
     var addedText by remember { mutableStateOf<Long?>(null) }
 
+    val drawer = rememberDrawerState(DrawerValue.Closed)
+    val scope = rememberCoroutineScope()
+
     val pickVideo = rememberLauncherForActivityResult(ActivityResultContracts.PickMultipleVisualMedia(10)) { vm.addVideos(it) }
     var overlayMode by remember { mutableStateOf(false) }       // true = auf neue, hoehere Spur legen
     var menu by remember { mutableStateOf(0) }                  // 1 = + Media, 2 = + Overlay
@@ -84,8 +88,29 @@ fun EditorScreen(vm: EditorViewModel = viewModel()) {
     if (vm.fullscreen) FullscreenPreview(vm)
     else if (vm.showSubList) SubtitleListScreen(vm)
     else if (vm.showProjects) ProjectsScreen(vm)
-    else Column(Modifier.fillMaxSize().background(Color(0xFF101014)).systemBarsPadding()) {
-        TopBar(vm) { renaming = true }
+    else ModalNavigationDrawer(
+        drawerState = drawer,
+        gesturesEnabled = false,
+        drawerContent = {
+            ModalDrawerSheet {
+                Text("CutLab", fontSize = 20.sp, modifier = Modifier.padding(16.dp))
+                NavigationDrawerItem(
+                    label = { Text("Projekte") }, icon = { Icon(Icons.Default.FolderOpen, null) }, selected = false,
+                    onClick = { scope.launch { drawer.close() }; vm.openList() }
+                )
+                NavigationDrawerItem(
+                    label = { Text("Neues Projekt") }, icon = { Icon(Icons.Default.Add, null) }, selected = false,
+                    onClick = { scope.launch { drawer.close() }; vm.createProject() }
+                )
+                NavigationDrawerItem(
+                    label = { Text("Projekt umbenennen") }, icon = { Icon(Icons.Default.Edit, null) }, selected = false,
+                    onClick = { scope.launch { drawer.close() }; renaming = true }
+                )
+            }
+        }
+    ) {
+    Column(Modifier.fillMaxSize().background(Color(0xFF101014)).systemBarsPadding()) {
+        TopBar(vm, onMenu = { scope.launch { drawer.open() } }, onRename = { renaming = true })
         PreviewArea(vm, Modifier.weight(1f)) { editing = it }
         Transport(vm)
         EditBar(vm)
@@ -126,6 +151,7 @@ fun EditorScreen(vm: EditorViewModel = viewModel()) {
                 }
             }
         }
+    }
     }
 
     // Text bearbeiten
@@ -273,11 +299,19 @@ fun EditorScreen(vm: EditorViewModel = viewModel()) {
 }
 
 @Composable
-private fun TopBar(vm: EditorViewModel, onRename: () -> Unit) {
-    Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-        IconButton(onClick = { vm.openList() }) { Icon(Icons.Default.FolderOpen, "Projekte", tint = Color.White) }
-        Text(vm.project.name, color = Color.White, fontSize = 18.sp, maxLines = 1, modifier = Modifier.weight(1f).clickable(onClick = onRename).padding(8.dp))
-        IconButton(onClick = { vm.undo() }) { Icon(Icons.Default.Undo, "Rueckgaengig", tint = Color.White) }
+private fun TopBar(vm: EditorViewModel, onMenu: () -> Unit, onRename: () -> Unit) {
+    Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+        IconButton(onClick = onMenu) { Icon(Icons.Default.Menu, "Menü", tint = Color.White) }
+        // Projektname: umrahmt mit Stift, damit man sieht, dass man ihn aendern kann
+        Row(
+            Modifier.weight(1f).border(1.dp, Color(0xFF555566), RoundedCornerShape(10.dp))
+                .clickable(onClick = onRename).padding(horizontal = 10.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(vm.project.name, color = Color.White, fontSize = 15.sp, maxLines = 1, modifier = Modifier.weight(1f))
+            Icon(Icons.Default.Edit, "Projektname ändern", tint = Color.Gray, modifier = Modifier.size(16.dp))
+        }
+        Spacer(Modifier.width(8.dp))
         Button(onClick = { vm.export() }) { Icon(Icons.Default.FileDownload, null); Spacer(Modifier.width(4.dp)); Text("Export") }
     }
 }
@@ -504,10 +538,6 @@ private fun SelectionPanel(vm: EditorViewModel, onEditText: () -> Unit, onPreset
                 }
                 Kind.CLIP -> p.clips.find { it.id == sel.id }?.let { c ->
                     if (c.hasAudio) VolumeRow(c.gainDb) { vm.setClipGain(c.id, it) } else Text("Dieser Clip hat keinen Ton.", color = Color.Gray, fontSize = 11.sp)
-                    Text(
-                        "Anfang/Ende ziehen = kürzen  |  lange drücken und ziehen = verschieben (auch nach oben/unten in eine andere Spur)",
-                        color = Color.Gray, fontSize = 11.sp, modifier = Modifier.padding(vertical = 2.dp)
-                    )
                 }
                 Kind.AUDIO -> p.audios.find { it.id == sel.id }?.let { a ->
                     Text(a.name, color = Color.Gray, fontSize = 11.sp, maxLines = 1)
@@ -515,8 +545,6 @@ private fun SelectionPanel(vm: EditorViewModel, onEditText: () -> Unit, onPreset
                 }
             }
         }
-        IconButton(onClick = { vm.select(null) }) { Icon(Icons.Default.Close, "Auswahl aufheben", tint = Color.White) }
-        IconButton(onClick = { vm.deleteSelected() }) { Icon(Icons.Default.Delete, "Löschen", tint = Color(0xFFFF8A80)) }
     }
 }
 
@@ -563,9 +591,13 @@ private fun MenuEntry(icon: ImageVector, label: String, onClick: () -> Unit) {
 /** Schnellzugriff ueber der Timeline (wie bei DaVinci): Schneiden und Loeschen. */
 @Composable
 private fun EditBar(vm: EditorViewModel) {
-    Row(Modifier.fillMaxWidth().background(Color(0xFF1C1C26)).padding(horizontal = 6.dp), verticalAlignment = Alignment.CenterVertically) {
-        TextButton(onClick = { vm.split() }) { Icon(Icons.Default.ContentCut, null, modifier = Modifier.size(18.dp)); Spacer(Modifier.width(4.dp)); Text("Teilen", fontSize = 12.sp) }
-        TextButton(onClick = { vm.deleteSelected() }) { Icon(Icons.Default.Delete, null, modifier = Modifier.size(18.dp)); Spacer(Modifier.width(4.dp)); Text("Löschen", fontSize = 12.sp) }
+    val pad = PaddingValues(horizontal = 8.dp)
+    val hasSel = vm.selection != null || vm.trackSel != null
+    Row(Modifier.fillMaxWidth().background(Color(0xFF1C1C26)).padding(horizontal = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+        TextButton(onClick = { vm.split() }, contentPadding = pad) { Icon(Icons.Default.ContentCut, null, modifier = Modifier.size(18.dp)); Spacer(Modifier.width(4.dp)); Text("Teilen", fontSize = 12.sp) }
+        TextButton(onClick = { vm.deleteSelected() }, contentPadding = pad) { Icon(Icons.Default.Delete, null, modifier = Modifier.size(18.dp)); Spacer(Modifier.width(4.dp)); Text("Löschen", fontSize = 12.sp) }
+        TextButton(onClick = { vm.undo() }, contentPadding = pad) { Icon(Icons.Default.Undo, null, modifier = Modifier.size(18.dp)); Spacer(Modifier.width(4.dp)); Text("Rückgängig", fontSize = 12.sp) }
+        TextButton(onClick = { vm.select(null) }, enabled = hasSel, contentPadding = pad) { Icon(Icons.Default.Close, null, modifier = Modifier.size(18.dp)); Spacer(Modifier.width(4.dp)); Text("Abwählen", fontSize = 12.sp) }
     }
 }
 
@@ -604,14 +636,11 @@ private fun trackName(k: Kind, lane: Int): String = when (k) {
 private fun TrackPanel(vm: EditorViewModel, k: Kind, lane: Int) {
     Row(Modifier.fillMaxWidth().background(Color(0xFF20202A)).padding(start = 12.dp, end = 4.dp, top = 4.dp, bottom = 4.dp)) {
         Column(Modifier.weight(1f)) {
-            Text("Ganze Spur: ${trackName(k, lane)}", color = Color(0xFFFFD400), fontSize = 12.sp)
+            Text("Ganze Spur: ${trackName(k, lane)} (alle Clips)", color = Color(0xFFFFD400), fontSize = 12.sp)
             if (vm.trackHasAudio(k, lane)) {
                 VolumeRow(vm.trackGain(k, lane)) { vm.setTrackGain(k, lane, it) }
-                Text("Gilt für alle Clips dieser Spur.", color = Color.Gray, fontSize = 11.sp)
             } else Text("Diese Spur hat keinen Ton.", color = Color.Gray, fontSize = 11.sp, modifier = Modifier.padding(vertical = 6.dp))
         }
-        IconButton(onClick = { vm.select(null) }) { Icon(Icons.Default.Close, "Auswahl aufheben", tint = Color.White) }
-        IconButton(onClick = { vm.deleteTrack(k, lane); vm.select(null) }) { Icon(Icons.Default.Delete, "Spur löschen", tint = Color(0xFFFF8A80)) }
     }
 }
 
@@ -656,11 +685,11 @@ private fun VolumeRow(db: Float, onChange: (Float) -> Unit) {
     var dialog by remember { mutableStateOf(false) }
     val change by rememberUpdatedState(onChange)
     var lastTap by remember { mutableLongStateOf(0L) }
-    Row(verticalAlignment = Alignment.CenterVertically) {
+    Row(Modifier.fillMaxWidth().height(56.dp), verticalAlignment = Alignment.CenterVertically) {
         Icon(Icons.Default.VolumeUp, "Lautstärke", tint = Color.White, modifier = Modifier.size(20.dp))
         Slider(
             db, { onChange((it * 2f).roundToInt() / 2f) }, valueRange = -60f..12f,
-            modifier = Modifier.weight(1f).padding(horizontal = 6.dp).pointerInput(Unit) {
+            modifier = Modifier.weight(1f).height(56.dp).padding(horizontal = 6.dp).pointerInput(Unit) {
                 // Zweimal kurz antippen = zurueck auf 0 dB (der Regler selbst wird dabei nicht blockiert)
                 awaitEachGesture {
                     val down = awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
@@ -669,17 +698,20 @@ private fun VolumeRow(db: Float, onChange: (Float) -> Unit) {
                     while (true) {
                         val ev = awaitPointerEvent(PointerEventPass.Initial)
                         val ch = ev.changes.firstOrNull { it.id == down.id } ?: break
-                        if (kotlin.math.abs(ch.position.x - down.position.x) > viewConfiguration.touchSlop) moved = true
+                        if (kotlin.math.abs(ch.position.x - down.position.x) > viewConfiguration.touchSlop * 4) moved = true
                         if (!ch.pressed) break
                     }
                     val now = System.currentTimeMillis()
-                    if (!moved && now - t0 < 300L) {
-                        if (now - lastTap < 400L) { change(0f); lastTap = 0L } else lastTap = now
+                    if (!moved && now - t0 < 350L) {
+                        if (now - lastTap < 500L) { change(0f); lastTap = 0L } else lastTap = now
                     }
                 }
             }
         )
-        Text(dbLabel(db), color = Color(0xFF69F0AE), fontSize = 13.sp, modifier = Modifier.clickable { dialog = true }.padding(6.dp))
+        Text(
+            dbLabel(db), color = Color(0xFF69F0AE), fontSize = 13.sp, maxLines = 1, textAlign = TextAlign.Center,
+            modifier = Modifier.width(78.dp).clickable { dialog = true }.padding(vertical = 10.dp)     // feste Breite: aendert sich nicht mit den Ziffern
+        )
     }
     if (dialog) {
         var txt by remember { mutableStateOf(if (db <= -60f) "-60" else String.format(java.util.Locale.US, "%.1f", db)) }
@@ -710,7 +742,10 @@ private fun SizeRow(label: String, value: Float, range: ClosedFloatingPointRange
     Row(verticalAlignment = Alignment.CenterVertically) {
         Text(label, color = Color.Gray, fontSize = 11.sp, modifier = Modifier.width(78.dp))
         Slider(value, onChange, valueRange = range, modifier = Modifier.weight(1f).padding(horizontal = 6.dp))
-        Text("${(value * 1000).roundToInt()}", color = Color(0xFF69F0AE), fontSize = 13.sp, modifier = Modifier.clickable { dialog = true }.padding(6.dp))
+        Text(
+            "${(value * 1000).roundToInt()}", color = Color(0xFF69F0AE), fontSize = 13.sp, maxLines = 1, textAlign = TextAlign.Center,
+            modifier = Modifier.width(56.dp).clickable { dialog = true }.padding(vertical = 10.dp)
+        )
     }
     if (dialog) {
         var txt by remember { mutableStateOf("${(value * 1000).roundToInt()}") }

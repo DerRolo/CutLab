@@ -195,7 +195,10 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /** Neues Projekt startet mit der Standard-Untertitelvorlage (falls gesetzt). */
-    private fun newProjectData() = Project(subStyle = presets.find { it.name == defaultPreset }?.style ?: SubStyle())
+    private fun newProjectData() = Project(
+        name = "Projekt " + java.text.SimpleDateFormat("dd.MM. HH:mm", java.util.Locale.GERMANY).format(java.util.Date()),
+        subStyle = presets.find { it.name == defaultPreset }?.style ?: SubStyle()
+    )
 
     // ---------- Untertitel-Vorlagen ----------
     private fun persistPresets() { try { PresetStore.save(getApplication(), presets, defaultPreset) } catch (_: Exception) {} }
@@ -363,6 +366,8 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun deleteSelected() {
+        val ts = trackSel
+        if (selection == null && ts != null) { deleteTrack(ts.first, ts.second); return }      // ganze Spur ausgewaehlt
         val s = selection ?: return
         snap()
         val p = project
