@@ -31,6 +31,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -45,6 +46,7 @@ import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
 import android.app.Activity
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.text.KeyboardOptions
@@ -90,10 +92,15 @@ fun EditorScreen(vm: EditorViewModel = viewModel()) {
     else if (vm.showProjects) ProjectsScreen(vm)
     else ModalNavigationDrawer(
         drawerState = drawer,
-        gesturesEnabled = false,
+        gesturesEnabled = drawer.isOpen,        // nur wenn offen: Antippen daneben oder Wischen schliesst; geschlossen kein Wisch-Oeffnen (stoert die Timeline)
         drawerContent = {
-            ModalDrawerSheet {
-                Text("CutLab", fontSize = 20.sp, modifier = Modifier.padding(16.dp))
+            ModalDrawerSheet(modifier = Modifier.width(250.dp)) {
+                Row(Modifier.fillMaxWidth().padding(horizontal = 4.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                    IconButton(onClick = { scope.launch { drawer.close() } }) {
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, "Menü schließen")
+                    }
+                    Text("Menü", fontSize = 18.sp)
+                }
                 NavigationDrawerItem(
                     label = { Text("Projekte") }, icon = { Icon(Icons.Default.FolderOpen, null) }, selected = false,
                     onClick = { scope.launch { drawer.close() }; vm.openList() }
@@ -110,7 +117,8 @@ fun EditorScreen(vm: EditorViewModel = viewModel()) {
         }
     ) {
     Column(Modifier.fillMaxSize().background(Color(0xFF101014)).systemBarsPadding()) {
-        TopBar(vm, onMenu = { scope.launch { drawer.open() } }, onRename = { renaming = true })
+        BackHandler(enabled = drawer.isOpen) { scope.launch { drawer.close() } }
+        TopBar(vm, onMenu = { scope.launch { if (drawer.isOpen) drawer.close() else drawer.open() } }, onRename = { renaming = true })
         PreviewArea(vm, Modifier.weight(1f)) { editing = it }
         Transport(vm)
         EditBar(vm)
@@ -685,6 +693,7 @@ private fun VolumeRow(db: Float, onChange: (Float) -> Unit) {
     var dialog by remember { mutableStateOf(false) }
     val change by rememberUpdatedState(onChange)
     var lastTap by remember { mutableLongStateOf(0L) }
+    val scope = rememberCoroutineScope()
     Row(Modifier.fillMaxWidth().height(56.dp), verticalAlignment = Alignment.CenterVertically) {
         Icon(Icons.Default.VolumeUp, "Lautstärke", tint = Color.White, modifier = Modifier.size(20.dp))
         Slider(
@@ -702,8 +711,12 @@ private fun VolumeRow(db: Float, onChange: (Float) -> Unit) {
                         if (!ch.pressed) break
                     }
                     val now = System.currentTimeMillis()
-                    if (!moved && now - t0 < 350L) {
-                        if (now - lastTap < 500L) { change(0f); lastTap = 0L } else lastTap = now
+                    if (!moved && now - t0 < 400L) {
+                        if (now - lastTap < 700L) {
+                            lastTap = 0L
+                            // kurz warten: der Regler setzt bei einem Tipp selbst noch seinen Wert - danach erst auf 0 dB stellen
+                            scope.launch { delay(200); change(0f) }
+                        } else lastTap = now
                     }
                 }
             }
